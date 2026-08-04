@@ -1,8 +1,10 @@
 import serial
 from serial import SerialException
 import time
+from dataclasses import dataclass
 from typing import Optional
 
+@dataclass
 class RelayControllerConfig:
     port: str = 'COM11'
     baudrate: int = 115200

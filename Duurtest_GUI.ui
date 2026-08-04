@@ -127,7 +127,7 @@ color: rgb(255,255,255);</string>
         <string>RH01</string>
        </property>
       </widget>
-      <widget class="QCheckBox" name="Y04_checkBox">
+      <widget class="QCheckBox" name="YH04_checkBox">
        <property name="geometry">
         <rect>
          <x>20</x>
@@ -137,7 +137,7 @@ color: rgb(255,255,255);</string>
         </rect>
        </property>
        <property name="text">
-        <string>YH01</string>
+        <string>YH04</string>
        </property>
       </widget>
       <widget class="QCheckBox" name="DISP16_checkBox">

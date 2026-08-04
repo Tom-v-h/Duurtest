@@ -1,3 +1,19 @@
+"""
+GUI laag voor de duurtest (PySide6).
+
+Deze module is bewust dun: hij vult de widgets, leest de instellingen uit
+naar een TestSettings en start de loop uit testDriver.py in een aparte
+thread. De test zelf staat hier niet in.
+
+    Duurtest_GUI.ui  <->  gui.py  <->  testDriver.py  <->  relay.py
+
+Benodigd:
+    pip install PySide6 pyserial
+
+Starten:
+    python gui.py
+"""
+
 from __future__ import annotations
 
 import sys
@@ -6,6 +22,9 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtUiTools import QUiLoader
 from serial.tools import list_ports
+
+import testDriver
+from testDriver import TestSettings
 
 UI_FILE = Path(__file__).with_name("Duurtest_GUI.ui")
 
@@ -24,47 +43,40 @@ PAGE_PROGRESS = 1
 PORT_REFRESH_INTERVAL = 2000
 
 
-class TestWorker(QtCore.QThread):
-    """Draait de duurtest in een aparte thread zodat de GUI blijft reageren."""
+class TestThread(QtCore.QThread):
+    """
+    Draait testDriver.run_test() buiten de GUI-thread.
 
-    progress = QtCore.Signal(int)          # 0..100
+    De driver kent geen Qt: hij krijgt gewone callbacks mee, en die worden
+    hier vertaald naar signals zodat de widgets veilig bijgewerkt worden.
+    """
+
+    progress = QtCore.Signal(int, int)     # (gedaan, totaal)
     message = QtCore.Signal(str)
-    finished_ok = QtCore.Signal(bool)      # True = netjes klaar, False = gestopt/fout
+    failed = QtCore.Signal(str)
+    done = QtCore.Signal(bool)             # True = afgerond, False = gestopt
 
-    def __init__(self, settings: dict, parent=None):
+    def __init__(self, settings: TestSettings, parent=None):
         super().__init__(parent)
         self.settings = settings
         self._stop_requested = False
 
     def stop(self) -> None:
-        """Vraag de test om te stoppen (wordt tussen dispenses gecontroleerd)."""
+        """Vraag de test te stoppen; de driver checkt dit tussen de stappen."""
         self._stop_requested = True
 
     def run(self) -> None:
-        total = max(1, int(self.settings["dispense_number"]))
         try:
-            # TODO: hier de RelayController / xmlrpc logica uit testDriver.py aanroepen.
-            #   relay = RelayController(RelayControllerConfig(
-            #       port=self.settings["port"], baudrate=self.settings["baudrate"]))
-            #   relay.connect()
-            for i in range(total):
-                if self._stop_requested:
-                    self.message.emit("Test gestopt door gebruiker")
-                    self.finished_ok.emit(False)
-                    return
-
-                # TODO: één dispense-cyclus uitvoeren met self.settings["units"].
-                self.msleep(200)  # placeholder
-
-                self.progress.emit(int((i + 1) / total * 100))
-                self.message.emit(f"Dispense {i + 1} van {total}")
-
-            self.finished_ok.emit(True)
-        except Exception as exc:                     # noqa: BLE001 - naar GUI melden
-            self.message.emit(f"Fout: {exc}")
-            self.finished_ok.emit(False)
-        finally:
-            pass  # TODO: relay.turn_off() / relay.disconnect()
+            completed = testDriver.run_test(
+                self.settings,
+                on_progress=self.progress.emit,
+                on_message=self.message.emit,
+                should_stop=lambda: self._stop_requested,
+            )
+            self.done.emit(completed)
+        except Exception as exc:                 # noqa: BLE001 - naar GUI melden
+            self.failed.emit(str(exc))
+            self.done.emit(False)
 
 
 class DuurtestWindow(QtCore.QObject):
@@ -80,7 +92,7 @@ class DuurtestWindow(QtCore.QObject):
         super().__init__()
 
         self.ui = self._load_ui()
-        self.worker: TestWorker | None = None
+        self.thread: TestThread | None = None
 
         # Alle unit-checkboxes uit de "Unit List" groupbox, behalve 'Select all'.
         self.unit_checkboxes = [
@@ -222,8 +234,7 @@ class DuurtestWindow(QtCore.QObject):
         Namen van de aangevinkte units, bv. ['CX01', 'MH01'].
 
         De naam komt uit de objectnaam van de checkbox (CX01_checkBox -> CX01)
-        en niet uit het label, omdat de labels in de .ui nog niet allemaal
-        uniek zijn.
+        en moet overeenkomen met testDriver.UNITS.
         """
         return [
             cb.objectName().replace("_checkBox", "").replace("checkBox", "")
@@ -231,43 +242,31 @@ class DuurtestWindow(QtCore.QObject):
             if cb.isChecked()
         ]
 
-    def get_settings(self) -> dict:
-        return {
-            "port": self.ui.Com_comboBox.currentData(),
-            "baudrate": self.ui.baud_comboBox.currentData(),
-            "units": self.selected_units(),
-            "dispense_number": self.ui.DispenseNumber_spinBox.value(),
-            "power_cycle_interval": self.ui.PowerCycle_spinBox.value(),
-            "random_dispense": self.ui.Random_radioButton.isChecked(),
-            "dispense_amount": self.ui.DispenseAmount_spinBox.value(),
-            "dispense_min": self.ui.MinDispense_spinBox.value(),
-            "dispense_max": self.ui.MaxDispense_spinBox.value(),
-        }
-
-    def validate(self, settings: dict) -> str | None:
-        """Geeft een foutmelding terug, of None als alles klopt."""
-        if not settings["port"]:
-            return "Selecteer een com-port."
-        if not settings["units"]:
-            return "Selecteer minimaal één unit."
-        if settings["dispense_number"] <= 0:
-            return "Aantal dispenses moet groter zijn dan 0."
-        if settings["random_dispense"]:
-            if settings["dispense_min"] > settings["dispense_max"]:
-                return "Min dispense mag niet groter zijn dan max."
-            if settings["dispense_max"] <= 0:
-                return "Vul een max dispense waarde in."
-        elif settings["dispense_amount"] <= 0:
-            return "Vul een dispense hoeveelheid in."
-        return None
+    def get_settings(self) -> TestSettings:
+        """Zet de stand van de widgets om naar instellingen voor de driver."""
+        return TestSettings(
+            port=self.ui.Com_comboBox.currentData() or "",
+            baudrate=self.ui.baud_comboBox.currentData(),
+            units=self.selected_units(),
+            dispense_number=self.ui.DispenseNumber_spinBox.value(),
+            power_cycle_interval=self.ui.PowerCycle_spinBox.value(),
+            random_dispense=self.ui.Random_radioButton.isChecked(),
+            dispense_amount=self.ui.DispenseAmount_spinBox.value(),
+            dispense_min=self.ui.MinDispense_spinBox.value(),
+            dispense_max=self.ui.MaxDispense_spinBox.value(),
+        )
 
     # ------------------------------------------------------------------
     # Knoppen
     # ------------------------------------------------------------------
     def start_test(self) -> None:
+        if self.thread is not None and self.thread.isRunning():
+            return
+
         settings = self.get_settings()
 
-        error = self.validate(settings)
+        # De driver bepaalt zelf wat geldige instellingen zijn; hier alleen tonen.
+        error = settings.validate()
         if error:
             QtWidgets.QMessageBox.warning(self.ui, "Instellingen", error)
             return
@@ -275,31 +274,39 @@ class DuurtestWindow(QtCore.QObject):
         self.ui.progressBar.setValue(0)
         self.ui.stackedWidget.setCurrentIndex(PAGE_PROGRESS)
 
-        self.worker = TestWorker(settings, parent=self)
-        self.worker.progress.connect(self.ui.progressBar.setValue)
-        self.worker.message.connect(self.ui.statusBar().showMessage)
-        self.worker.finished_ok.connect(self.on_test_finished)
-        self.worker.start()
+        self.thread = TestThread(settings, parent=self)
+        self.thread.progress.connect(self.on_progress)
+        self.thread.message.connect(self.ui.statusBar().showMessage)
+        self.thread.failed.connect(self.on_failed)
+        self.thread.done.connect(self.on_done)
+        self.thread.start()
 
     def stop_test(self) -> None:
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.stop()
+        if self.thread is not None and self.thread.isRunning():
+            self.ui.statusBar().showMessage("Stoppen...")
             self.ui.pushButton_2.setEnabled(False)   # voorkomt dubbel klikken
+            self.thread.stop()
         else:
             self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
 
-    def on_test_finished(self, completed: bool) -> None:
+    def on_progress(self, done: int, total: int) -> None:
+        self.ui.progressBar.setValue(int(done / total * 100) if total else 0)
+
+    def on_failed(self, error: str) -> None:
+        QtWidgets.QMessageBox.critical(self.ui, "Duurtest", error)
+
+    def on_done(self, completed: bool) -> None:
         self.ui.pushButton_2.setEnabled(True)
-        self.worker = None
+        self.thread = None
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
         if completed:
             QtWidgets.QMessageBox.information(self.ui, "Duurtest", "Test afgerond.")
 
     def shutdown(self) -> None:
-        """Stop de test-thread netjes bij het afsluiten van de applicatie."""
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait(5000)
+        """Stop de test netjes bij het afsluiten van de applicatie."""
+        if self.thread is not None and self.thread.isRunning():
+            self.thread.stop()
+            self.thread.wait(10000)
 
 
 def main() -> int:
