@@ -1,21 +1,3 @@
-"""
-GUI template voor Duurtest_GUI.ui (PySide6)
-
-Laadt het Qt Designer bestand op runtime in met QUiLoader, zodat je in
-Designer kunt blijven werken zonder telkens te compileren, en koppelt alle
-knoppen, checkboxes en dropdowns aan Python code.
-
-Benodigd:
-    pip install PySide6 pyserial
-
-Starten:
-    python gui.py
-
-Alternatief (als je liever autocompletion op de widgets hebt):
-    pyside6-uic Duurtest_GUI.ui -o ui_duurtest.py
-en dan `from ui_duurtest import Ui_MainWindow` gebruiken in plaats van QUiLoader.
-"""
-
 from __future__ import annotations
 
 import sys
