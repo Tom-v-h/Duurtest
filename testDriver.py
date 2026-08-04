@@ -1,21 +1,24 @@
 """
 Duurtest driver.
 
-Bevat de testloop zelf en weet niets van de GUI: geen Qt imports, alleen
-gewone Python. De GUI (gui.py) vult een TestSettings en roept run_test() aan
-in een aparte thread; voortgang en meldingen gaan via callbacks terug.
+Bevat de testloop en draait die in een eigen thread, zodat de GUI alleen
+maar hoeft te starten, te stoppen en de status uit te lezen. Geen Qt hier:
+gewone Python, dus ook los te gebruiken.
 
-Los draaien kan ook:
-    python testDriver.py
+    test = DuurTest(TestSettings(port="COM11", units=["CX01"], ...))
+    test.start()
+    while test.running:
+        print(test.percentage, test.message)
 """
 
 from __future__ import annotations
 
 import random
+import threading
 import time
 import xmlrpc.client
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
 from relay import RelayController, RelayControllerConfig
 
@@ -32,17 +35,16 @@ DISPENSER_URL = "http://localhost:9111/"
 DISPENSER_PORT = "COM12"
 DISPENSER_ADDRESS = "0x0002"
 DISPENSER_BAUDRATE = 19200
-DISPENSER_VERBOSE = False
 
 FILL_LEVEL = 3800          # waarde voor correctFillLevel
-POWER_ON_DELAY = 10.0      # wachten na inschakelen voor de unit opgestart is
-DISPENSE_DELAY = 60.0      # wachten na een dispense voor die klaar is
+POWER_ON_DELAY = 10.0      # wachten na inschakelen tot de unit opgestart is
+DISPENSE_DELAY = 60.0      # wachten na een dispense tot die klaar is
 POWER_OFF_DELAY = 5.0      # hoe lang de spanning eraf blijft bij een powercycle
 
 
 @dataclass
 class TestSettings:
-    """Alles wat de gebruiker in de GUI instelt."""
+    """Alles wat in de GUI wordt ingevuld."""
 
     port: str = ""                     # com-poort van de relay/STM32
     baudrate: int = 115200
@@ -50,8 +52,8 @@ class TestSettings:
     dispense_number: int = 0           # totaal aantal dispenses in de test
     power_cycle_interval: int = 0      # powercycle na elke N dispenses, 0 = uit
     random_dispense: bool = False      # False = vaste hoeveelheid, True = random
-    dispense_amount: int = 0           # gebruikt bij random_dispense = False
-    dispense_min: int = 0              # gebruikt bij random_dispense = True
+    dispense_amount: int = 0           # bij random_dispense = False
+    dispense_min: int = 0              # bij random_dispense = True
     dispense_max: int = 0
 
     def validate(self) -> Optional[str]:
@@ -65,8 +67,6 @@ class TestSettings:
             return f"Onbekende unit(s): {', '.join(unknown)}"
         if self.dispense_number <= 0:
             return "Aantal dispenses moet groter zijn dan 0."
-        if self.power_cycle_interval < 0:
-            return "Power cycle interval mag niet negatief zijn."
         if self.random_dispense:
             if self.dispense_max <= 0:
                 return "Vul een max dispense waarde in."
@@ -83,133 +83,139 @@ class TestSettings:
         return self.dispense_amount
 
 
-# Callback-types: de GUI hangt hier zijn signals aan, los draaien gebruikt prints.
-ProgressCallback = Callable[[int, int], None]   # (gedaan, totaal)
-MessageCallback = Callable[[str], None]
-StopCallback = Callable[[], bool]               # True = stoppen
+class _Stopped(Exception):
+    """Intern: er is op Stop gedrukt."""
 
 
-class TestAborted(Exception):
-    """Wordt intern gebruikt als de gebruiker op Stop drukt."""
-
-
-def run_test(
-    settings: TestSettings,
-    on_progress: Optional[ProgressCallback] = None,
-    on_message: Optional[MessageCallback] = None,
-    should_stop: Optional[StopCallback] = None,
-) -> bool:
+class DuurTest:
     """
-    Draait de duurtest.
+    De duurtest zelf.
 
-    Doet settings.dispense_number dispenses en schakelt na elke
-    settings.power_cycle_interval dispenses de spanning even uit en weer aan.
-
-    Geeft True terug als de test helemaal is afgerond, False als er onderweg
-    is gestopt. Fouten (geen verbinding, dispenser niet bereikbaar) komen als
-    exception naar boven; de aanroeper handelt die af.
+    start() zet de test in een aparte thread aan, stop() vraagt hem te
+    stoppen. De GUI leest ondertussen running, percentage en message uit.
     """
-    progress = on_progress or (lambda done, total: None)
-    message = on_message or (lambda text: None)
-    stop = should_stop or (lambda: False)
 
-    error = settings.validate()
-    if error:
-        raise ValueError(error)
+    def __init__(self, settings: TestSettings):
+        self.settings = settings
 
-    relay = RelayController(RelayControllerConfig(
-        port=settings.port,
-        baudrate=settings.baudrate,
-    ))
+        # Status die de GUI uitleest.
+        self.running = False
+        self.completed = False              # True = alle dispenses gedaan
+        self.percentage = 0
+        self.message = ""
+        self.error: Optional[str] = None
 
-    message(f"Verbinden met relay op {settings.port}...")
-    relay.connect()
+        self._stop = False
+        self._thread: Optional[threading.Thread] = None
 
-    server = xmlrpc.client.ServerProxy(
-        DISPENSER_URL, allow_none=True, verbose=DISPENSER_VERBOSE
-    )
+    # -- besturing --------------------------------------------------
+    def start(self) -> None:
+        error = self.settings.validate()
+        if error:
+            raise ValueError(error)
+        self.running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-    total = settings.dispense_number
-    interval = settings.power_cycle_interval
+    def stop(self) -> None:
+        """Stoppen na de stap die nu bezig is."""
+        self._stop = True
 
-    try:
-        _power_on(relay, server, message, stop)
+    def wait(self, timeout: Optional[float] = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
 
-        for done in range(1, total + 1):
-            _check_stop(stop)
+    # -- de test ----------------------------------------------------
+    def _run(self) -> None:
+        try:
+            self._loop()
+            self.completed = True
+            self.message = "Test afgerond"
+        except _Stopped:
+            self.message = "Test gestopt"
+        except Exception as exc:                 # noqa: BLE001 - naar GUI melden
+            self.error = str(exc)
+            self.message = f"Fout: {exc}"
+        finally:
+            self.running = False
 
-            unit = random.choice(settings.units)
-            amount = settings.next_amount()
-            message(f"Dispense {done}/{total}: {unit}, {amount} ml")
+    def _loop(self) -> None:
+        settings = self.settings
+        total = settings.dispense_number
+        interval = settings.power_cycle_interval
 
-            server.poll()
-            server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
-            server.prepareUnitForDispense(unit, amount)
-            server.dispenseAllPreparedUnits()
-            _sleep(DISPENSE_DELAY, stop)
+        config = RelayControllerConfig()
+        config.port = settings.port
+        config.baudrate = settings.baudrate
+        relay = RelayController(config)
 
-            progress(done, total)
+        self.message = f"Verbinden met relay op {settings.port}..."
+        relay.connect()
 
-            # Powercycle tussendoor, maar niet na de laatste dispense: daar
-            # gaat de spanning er in de finally toch af.
-            if interval and done % interval == 0 and done < total:
-                message(f"Power cycle na {done} dispenses")
-                _power_off(relay)
-                _sleep(POWER_OFF_DELAY, stop)
-                _power_on(relay, server, message, stop)
+        server = xmlrpc.client.ServerProxy(DISPENSER_URL, allow_none=True)
 
-        message("Test afgerond")
-        return True
+        try:
+            self._power_on(relay, server)
 
-    except TestAborted:
-        message("Test gestopt")
-        return False
+            for done in range(1, total + 1):
+                self._check_stop()
 
-    finally:
-        _power_off(relay)
-        relay.disconnect()
+                unit = random.choice(settings.units)
+                amount = settings.next_amount()
+                self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
 
+                server.poll()
+                server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
+                server.prepareUnitForDispense(unit, amount)
+                server.dispenseAllPreparedUnits()
+                self._sleep(DISPENSE_DELAY)
 
-# ----------------------------------------------------------------------
-# Hulpfuncties
-# ----------------------------------------------------------------------
-def _power_on(relay, server, message: MessageCallback, stop: StopCallback) -> None:
-    """Spanning erop en de dispenser opnieuw verbinden."""
-    relay.turn_on()
-    _sleep(POWER_ON_DELAY, stop)
-    message(f"Verbinden met dispenser op {DISPENSER_PORT}...")
-    server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
-    server.poll()
+                self.percentage = int(done / total * 100)
 
+                # Powercycle tussendoor, maar niet na de laatste dispense:
+                # daar gaat de spanning er hieronder toch af.
+                if interval and done % interval == 0 and done < total:
+                    self.message = f"Power cycle na {done} dispenses"
+                    self._power_off(relay)
+                    self._sleep(POWER_OFF_DELAY)
+                    self._power_on(relay, server)
+        finally:
+            self._power_off(relay)
+            relay.disconnect()
 
-def _power_off(relay) -> None:
-    """Spanning eraf; faalt nooit, zodat afsluiten altijd doorgaat."""
-    try:
-        if relay.is_connected:
-            relay.turn_off()
-    except Exception:                      # noqa: BLE001 - stoppen gaat voor
-        pass
+    # -- hulpjes ----------------------------------------------------
+    def _power_on(self, relay, server) -> None:
+        """Spanning erop en de dispenser opnieuw verbinden."""
+        relay.turn_on()
+        self._sleep(POWER_ON_DELAY)
+        self.message = f"Verbinden met dispenser op {DISPENSER_PORT}..."
+        server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
+        server.poll()
 
+    @staticmethod
+    def _power_off(relay) -> None:
+        """Spanning eraf; faalt nooit, zodat afsluiten altijd doorgaat."""
+        try:
+            if relay.is_connected:
+                relay.turn_off()
+        except Exception:                        # noqa: BLE001 - stoppen gaat voor
+            pass
 
-def _check_stop(stop: StopCallback) -> None:
-    if stop():
-        raise TestAborted
+    def _check_stop(self) -> None:
+        if self._stop:
+            raise _Stopped
 
-
-def _sleep(seconds: float, stop: StopCallback) -> None:
-    """
-    Wachten in kleine stapjes, zodat op Stop drukken niet pas na 60 seconden
-    effect heeft.
-    """
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        _check_stop(stop)
-        time.sleep(min(0.1, deadline - time.monotonic()))
+    def _sleep(self, seconds: float) -> None:
+        """Wachten in stapjes, zodat Stop niet pas na 60 seconden aankomt."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self._check_stop()
+            time.sleep(min(0.1, deadline - time.monotonic()))
 
 
 if __name__ == "__main__":
-    # Los draaien zonder GUI, handig om de driver te testen.
-    demo = TestSettings(
+    # Los draaien zonder GUI.
+    test = DuurTest(TestSettings(
         port="COM11",
         baudrate=115200,
         units=["CX01", "MH01", "YH04"],
@@ -218,9 +224,9 @@ if __name__ == "__main__":
         random_dispense=True,
         dispense_min=1,
         dispense_max=500,
-    )
-    run_test(
-        demo,
-        on_progress=lambda done, total: print(f"[{done}/{total}]"),
-        on_message=print,
-    )
+    ))
+    test.start()
+    while test.running:
+        print(f"{test.percentage:3d}%  {test.message}")
+        time.sleep(1)
+    print(test.message)
