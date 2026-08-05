@@ -108,6 +108,13 @@ class DuurtestGUI(QtCore.QObject):
         # Reads the status of the running test. Only active during a test.
         self.status_timer = QtCore.QTimer(self, interval=STATUS_INTERVAL, timeout=self.show_status)
 
+        # The .ui file has no status bar, so QMainWindow creates one the
+        # first time statusBar() is called. Do that here rather than during
+        # the first status poll, otherwise the central widget would shrink
+        # by the height of the bar at the moment the test starts and the
+        # page would visibly jump.
+        self.ui.statusBar()
+
         # Start on the settings page with an empty progress bar.
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
         self.ui.progressBar.setValue(0)
