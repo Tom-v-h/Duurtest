@@ -1,17 +1,26 @@
 """
-Duurtest driver.
+Endurance test driver.
 
-Bevat de testloop en draait die in een eigen thread, zodat de GUI alleen
-maar hoeft te starten, te stoppen en de status uit te lezen. Geen Qt hier:
-gewone Python, dus ook los te gebruiken.
+Holds the test loop and runs it in its own thread, so the GUI only has to
+start it, stop it and read its status. There is no Qt code in here on
+purpose: this module is plain Python and can be used on its own.
 
     test = DuurTest(TestSettings(port="COM11", units=["CX01"], ...))
     test.start()
     while test.running:
         print(test.percentage, test.message)
 
-Het blok onderaan draait alleen als je deze module zelf start, handig om
-zonder GUI te testen of de relay en de dispenser reageren:
+One test run consists of:
+
+    relay on -> wait -> connect dispenser
+    for every dispense:
+        pick a unit and an amount, dispense it, wait
+        after every power_cycle_interval dispenses: relay off, on, reconnect
+    relay off -> disconnect
+
+The block at the bottom only runs when this module is started directly,
+which is handy to check whether the relay and the dispenser respond without
+involving the GUI:
     python -m duurtest.testDriver
 """
 
@@ -26,7 +35,8 @@ from typing import Optional
 
 from .relay import RelayController, RelayControllerConfig
 
-# Unitnaam -> nummer, zoals de dispenser ze kent.
+# Unit name -> number, as the dispenser knows them. The names match the
+# object names of the checkboxes in Duurtest_GUI.ui.
 UNITS: dict[str, int] = {
     'CX01': 1, 'MH01': 2, 'YH04': 3, 'RH01': 4,
     'YX01': 5, 'WX01': 6, 'CH01': 7, 'GH01': 8,
@@ -34,38 +44,50 @@ UNITS: dict[str, int] = {
     'GX01': 13, 'BX01': 14, 'YH02': 15, 'DISP16': 16,
 }
 
-# Verbinding met de dispenser (xmlrpc server), los van de relay-poort.
+# Connection to the dispenser. This is a separate xmlrpc service on its own
+# serial port, unrelated to the relay port picked in the GUI.
 DISPENSER_URL = "http://localhost:9111/"
 DISPENSER_PORT = "COM12"
 DISPENSER_ADDRESS = "0x0002"
 DISPENSER_BAUDRATE = 19200
 
-FILL_LEVEL = 3800          # waarde voor correctFillLevel
-POWER_ON_DELAY = 10.0      # wachten na inschakelen tot de unit opgestart is
-DISPENSE_DELAY = 60.0      # wachten na een dispense tot die klaar is
-POWER_OFF_DELAY = 5.0      # hoe lang de spanning eraf blijft bij een powercycle
+FILL_LEVEL = 3800          # value passed to correctFillLevel
+POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
+DISPENSE_DELAY = 60.0      # wait after a dispense until it has finished
+POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
 
 @dataclass
 class TestSettings:
-    """Alles wat in de GUI wordt ingevuld."""
+    """
+    Everything the operator fills in in the GUI. gui.read_settings() builds
+    one of these; running without a GUI means filling it in by hand.
+    """
 
-    port: str = ""                     # com-poort van de relay/STM32
+    port: str = ""                     # COM port of the relay/STM32
     baudrate: int = 115200
-    units: list[str] = field(default_factory=list)
-    dispense_number: int = 0           # totaal aantal dispenses in de test
-    power_cycle_interval: int = 0      # powercycle na elke N dispenses, 0 = uit
-    random_dispense: bool = False      # False = vaste hoeveelheid, True = random
-    dispense_amount: int = 0           # bij random_dispense = False
-    dispense_min: int = 0              # bij random_dispense = True
+    units: list[str] = field(default_factory=list)   # names from UNITS
+    dispense_number: int = 0           # total number of dispenses in the test
+    power_cycle_interval: int = 0      # power cycle every N dispenses, 0 = off
+    random_dispense: bool = False      # False = fixed amount, True = random
+    dispense_amount: int = 0           # used when random_dispense is False
+    dispense_min: int = 0              # used when random_dispense is True
     dispense_max: int = 0
 
     def validate(self) -> Optional[str]:
-        """Geeft een foutmelding terug, of None als de instellingen kloppen."""
+        """
+        Check the settings before a test is started.
+
+        Returns a message describing the first problem found, or None when
+        everything is in order. The message is shown as-is by the GUI, which
+        is why it is Dutch.
+        """
         if not self.port:
             return "Selecteer een com-port."
         if not self.units:
             return "Selecteer minimaal één unit."
+        # Catches a checkbox whose object name does not appear in UNITS,
+        # which would otherwise only fail halfway through the test.
         unknown = [u for u in self.units if u not in UNITS]
         if unknown:
             return f"Onbekende unit(s): {', '.join(unknown)}"
@@ -81,39 +103,55 @@ class TestSettings:
         return None
 
     def next_amount(self) -> int:
-        """De hoeveelheid ml voor de volgende dispense."""
+        """Amount in ml for the next dispense, fixed or drawn at random."""
         if self.random_dispense:
             return random.randint(self.dispense_min, self.dispense_max)
         return self.dispense_amount
 
 
 class _Stopped(Exception):
-    """Intern: er is op Stop gedrukt."""
+    """
+    Raised internally when stop() has been called.
+
+    Using an exception means the wait helper can break out from anywhere in
+    the loop, while the finally block still switches the relay off.
+    """
 
 
 class DuurTest:
     """
-    De duurtest zelf.
+    A single run of the endurance test.
 
-    start() zet de test in een aparte thread aan, stop() vraagt hem te
-    stoppen. De GUI leest ondertussen running, percentage en message uit.
+    start() runs the loop on a separate thread and returns immediately;
+    stop() asks it to end. While it runs, the caller reads the status
+    attributes below. Those are plain values written by the test thread and
+    read by the GUI thread, which needs no lock: each is written in one
+    assignment, and the GUI only displays them.
     """
 
     def __init__(self, settings: TestSettings):
         self.settings = settings
 
-        # Status die de GUI uitleest.
-        self.running = False
-        self.completed = False              # True = alle dispenses gedaan
-        self.percentage = 0
-        self.message = ""
-        self.error: Optional[str] = None
+        # Status, read by the GUI.
+        self.running = False                # True between start() and the end
+        self.completed = False              # True when all dispenses were done
+        self.percentage = 0                 # 0..100, for the progress bar
+        self.message = ""                   # last status line, for the status bar
+        self.error: Optional[str] = None    # set when the test failed
 
-        self._stop = False
+        self._stop = False                             # stop requested
         self._thread: Optional[threading.Thread] = None
 
-    # -- besturing --------------------------------------------------
+    # -- control ----------------------------------------------------
     def start(self) -> None:
+        """
+        Validate the settings and start the test on its own thread.
+
+        Raises ValueError when the settings are not usable. The thread is a
+        daemon so a forgotten test can never keep the process alive; closing
+        the window still calls stop() and waits, so the relay is switched
+        off properly.
+        """
         error = self.settings.validate()
         if error:
             raise ValueError(error)
@@ -122,32 +160,51 @@ class DuurTest:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stoppen na de stap die nu bezig is."""
+        """
+        Ask the test to stop after the step that is currently running.
+
+        Only sets a flag; the loop checks it between steps and while
+        waiting, so a dispense in progress is never cut in half.
+        """
         self._stop = True
 
     def wait(self, timeout: Optional[float] = None) -> None:
+        """Block until the test thread has ended, or until timeout seconds."""
         if self._thread is not None:
             self._thread.join(timeout)
 
-    # -- de test ----------------------------------------------------
+    # -- the test ---------------------------------------------------
     def _run(self) -> None:
+        """
+        Thread body: run the loop and record how it ended.
+
+        Everything is caught here. An exception on this thread would
+        otherwise disappear into the console while the GUI kept waiting, so
+        it is stored in self.error instead and shown by the GUI.
+        """
         try:
             self._loop()
             self.completed = True
             self.message = "Test afgerond"
         except _Stopped:
             self.message = "Test gestopt"
-        except Exception as exc:                 # noqa: BLE001 - naar GUI melden
+        except Exception as exc:                 # noqa: BLE001 - report to the GUI
             self.error = str(exc)
             self.message = f"Fout: {exc}"
         finally:
+            # Set last, so the GUI sees the final status in the same poll in
+            # which it notices the test has ended.
             self.running = False
 
     def _loop(self) -> None:
+        """The test itself: connect, dispense, power cycle, disconnect."""
         settings = self.settings
         total = settings.dispense_number
         interval = settings.power_cycle_interval
 
+        # RelayControllerConfig is a plain class, so it is created empty and
+        # the port picked in the GUI is assigned onto it. The other fields
+        # keep the defaults from relay.py.
         config = RelayControllerConfig()
         config.port = settings.port
         config.baudrate = settings.baudrate
@@ -156,6 +213,7 @@ class DuurTest:
         self.message = f"Verbinden met relay op {settings.port}..."
         relay.connect()
 
+        # ServerProxy does not talk to the network yet; the first call does.
         server = xmlrpc.client.ServerProxy(DISPENSER_URL, allow_none=True)
 
         try:
@@ -168,6 +226,9 @@ class DuurTest:
                 amount = settings.next_amount()
                 self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
 
+                # poll() lets the dispenser update its own state, then the
+                # fill level is corrected so the unit has enough left to
+                # dispense the requested amount.
                 server.poll()
                 server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
                 server.prepareUnitForDispense(unit, amount)
@@ -176,20 +237,27 @@ class DuurTest:
 
                 self.percentage = int(done / total * 100)
 
-                # Powercycle tussendoor, maar niet na de laatste dispense:
-                # daar gaat de spanning er hieronder toch af.
+                # Power cycle in between, but not after the last dispense:
+                # the finally block switches the power off anyway.
                 if interval and done % interval == 0 and done < total:
                     self.message = f"Power cycle na {done} dispenses"
                     self._power_off(relay)
                     self._sleep(POWER_OFF_DELAY)
                     self._power_on(relay, server)
         finally:
+            # Runs on a normal finish, on stop and on an error, so the units
+            # are never left powered.
             self._power_off(relay)
             relay.disconnect()
 
-    # -- hulpjes ----------------------------------------------------
+    # -- helpers ----------------------------------------------------
     def _power_on(self, relay, server) -> None:
-        """Spanning erop en de dispenser opnieuw verbinden."""
+        """
+        Switch the power on and connect to the dispenser.
+
+        The dispenser loses power together with the units, so after every
+        power cycle it has to be connected and polled again.
+        """
         relay.turn_on()
         self._sleep(POWER_ON_DELAY)
         self.message = f"Verbinden met dispenser op {DISPENSER_PORT}..."
@@ -198,19 +266,27 @@ class DuurTest:
 
     @staticmethod
     def _power_off(relay) -> None:
-        """Spanning eraf; faalt nooit, zodat afsluiten altijd doorgaat."""
+        """
+        Switch the power off. Never raises: this also runs while handling an
+        error, and a second failure there would hide the original one.
+        """
         try:
             if relay.is_connected:
                 relay.turn_off()
-        except Exception:                        # noqa: BLE001 - stoppen gaat voor
+        except Exception:                        # noqa: BLE001 - shutting down wins
             pass
 
     def _check_stop(self) -> None:
+        """Raise _Stopped when stop() has been called."""
         if self._stop:
             raise _Stopped
 
     def _sleep(self, seconds: float) -> None:
-        """Wachten in stapjes, zodat Stop niet pas na 60 seconden aankomt."""
+        """
+        Wait, but in steps of at most 0.1 seconds while checking for a stop
+        request. A plain time.sleep(60) would make the Stop button appear
+        dead for up to a minute.
+        """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self._check_stop()
@@ -218,8 +294,8 @@ class DuurTest:
 
 
 if __name__ == "__main__":
-    # Los draaien zonder GUI: python -m duurtest.testDriver
-    # Deze instellingen vervangen dan wat je normaal in het venster invult.
+    # Run without the GUI: python -m duurtest.testDriver
+    # These settings stand in for what is normally filled in in the window.
     test = DuurTest(TestSettings(
         port="COM11",
         baudrate=115200,
@@ -231,6 +307,7 @@ if __name__ == "__main__":
         dispense_max=500,
     ))
     test.start()
+    # Same status attributes the GUI polls, printed once a second.
     while test.running:
         print(f"{test.percentage:3d}%  {test.message}")
         time.sleep(1)

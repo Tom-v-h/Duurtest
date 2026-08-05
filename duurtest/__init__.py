@@ -1,12 +1,12 @@
 """
-Duurtest: stresstest voor de dispenser-units.
+Duurtest: endurance test for the dispenser units.
 
     Duurtest_GUI.ui  <->  gui.py  <->  testDriver.py  <->  relay.py
 
-gui.py leest de instellingen uit het venster en toont de status,
-testDriver.py draait de testloop en relay.py praat met de STM32.
+gui.py reads the settings from the window and shows the status,
+testDriver.py runs the test loop and relay.py talks to the STM32 relay.
 
-Starten doe je met main.py in de map hierboven.
+Start the application with main.py in the directory above.
 """
 
 __version__ = "1.0.0"
