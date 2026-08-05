@@ -56,6 +56,12 @@ POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 DISPENSE_DELAY = 5.0      # wait after a dispense until it has finished
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
+# A long dispense keeps the unit busy for a while, and the reply frame that
+# comes back afterwards is sometimes unreadable. Rather than ending the test,
+# the driver reconnects and tries the call again this many times.
+DISPENSER_RETRIES = 3
+RESYNC_DELAY = 2.0         # pause before reconnecting, lets the line go quiet
+
 
 @dataclass
 class TestSettings:
@@ -138,6 +144,7 @@ class DuurTest:
         self.percentage = 0                 # 0..100, for the progress bar
         self.message = ""                   # last status line, for the status bar
         self.error: Optional[str] = None    # set when the test failed
+        self.resyncs = 0                    # times the dispenser had to be reconnected
 
         self._stop = False                             # stop requested
         self._thread: Optional[threading.Thread] = None
@@ -185,7 +192,10 @@ class DuurTest:
         try:
             self._loop()
             self.completed = True
-            self.message = "Test afgerond"
+            # Mention the reconnects: a run that needed a lot of them
+            # finished, but says something about the connection.
+            self.message = ("Test afgerond" if not self.resyncs else
+                            f"Test afgerond, {self.resyncs}x opnieuw verbonden met de dispenser")
         except _Stopped:
             self.message = "Test gestopt"
         except Exception as exc:                 # noqa: BLE001 - report to the GUI
@@ -226,14 +236,14 @@ class DuurTest:
                 amount = settings.next_amount()
                 self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
 
-                # poll() lets the dispenser update its own state, then the
-                # fill level is corrected so the unit has enough left to
-                # dispense the requested amount.
-                server.poll()
-                server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
-                server.prepareUnitForDispense(unit, amount)
-                server.dispenseAllPreparedUnits()
+                self._prepare_dispense(server, unit, amount)
+                garbled = self._start_dispense(server)
                 self._sleep(DISPENSE_DELAY)
+                if garbled:
+                    # The reply was unreadable, so the connection is out of
+                    # step. Resync now that the unit has had its time, so the
+                    # next round starts clean.
+                    self._resync(server)
 
                 self.percentage = int(done / total * 100)
 
@@ -249,6 +259,70 @@ class DuurTest:
             # are never left powered.
             self._power_off(relay)
             relay.disconnect()
+
+    # -- talking to the dispenser -----------------------------------
+    def _prepare_dispense(self, server, unit: str, amount: int) -> None:
+        """
+        Poll the dispenser, correct the fill level and prepare the unit.
+
+        These three only read and adjust state, so they may be repeated
+        safely. A Fault here is nearly always a garbled reply frame, such as
+
+            Expected encrypted string '0071;0A08;416A00265D\\n'
+            to contain 4 parts, got 3
+
+        which means the serial connection is out of step: bytes were lost or
+        a leftover fragment was read as if it were a new frame. Reconnecting
+        starts a fresh frame and the same call then succeeds, so the test
+        survives it instead of ending on the second dispense.
+        """
+        for attempt in range(1, DISPENSER_RETRIES + 1):
+            try:
+                server.poll()
+                server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
+                server.prepareUnitForDispense(unit, amount)
+                return
+            except xmlrpc.client.Fault as fault:
+                # Out of attempts: let it end the test, with the dispenser's
+                # own message so it is clear where it came from.
+                if attempt == DISPENSER_RETRIES:
+                    raise
+                self.resyncs += 1
+                self.message = (f"Dispenser antwoordde onleesbaar, poging "
+                                f"{attempt} van {DISPENSER_RETRIES}: {fault.faultString}")
+                self._resync(server)
+
+    def _start_dispense(self, server) -> bool:
+        """
+        Trigger the prepared dispense. Returns True when the reply was
+        unreadable, so the caller knows a resync is needed.
+
+        Deliberately not retried: a Fault means the answer was unreadable,
+        not that nothing happened. The unit may well be dispensing already,
+        and repeating the command could dispense the amount twice.
+        """
+        try:
+            server.dispenseAllPreparedUnits()
+            return False
+        except xmlrpc.client.Fault as fault:
+            self.resyncs += 1
+            self.message = (f"Antwoord op de dispense was onleesbaar ({fault.faultString}); "
+                            f"niet herhaald, de unit kan al bezig zijn")
+            return True
+
+    def _resync(self, server) -> None:
+        """
+        Reconnect to the dispenser so a half-read frame is discarded.
+
+        Faults are swallowed: if the reconnect itself fails, the next
+        attempt reports the problem, and after DISPENSER_RETRIES tries the
+        test ends with the dispenser's own message.
+        """
+        self._sleep(RESYNC_DELAY)
+        try:
+            server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
+        except xmlrpc.client.Fault:
+            pass
 
     # -- helpers ----------------------------------------------------
     def _power_on(self, relay, server) -> None:
