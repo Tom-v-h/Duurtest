@@ -47,13 +47,13 @@ UNITS: dict[str, int] = {
 # Connection to the dispenser. This is a separate xmlrpc service on its own
 # serial port, unrelated to the relay port picked in the GUI.
 DISPENSER_URL = "http://localhost:9111/"
-DISPENSER_PORT = "COM12"
+DISPENSER_PORT = "COM16"
 DISPENSER_ADDRESS = "0x0002"
 DISPENSER_BAUDRATE = 19200
 
 FILL_LEVEL = 3800          # value passed to correctFillLevel
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
-DISPENSE_DELAY = 60.0      # wait after a dispense until it has finished
+DISPENSE_DELAY = 5.0      # wait after a dispense until it has finished
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
 
