@@ -9,6 +9,10 @@ gewone Python, dus ook los te gebruiken.
     test.start()
     while test.running:
         print(test.percentage, test.message)
+
+Het blok onderaan draait alleen als je deze module zelf start, handig om
+zonder GUI te testen of de relay en de dispenser reageren:
+    python -m duurtest.testDriver
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import xmlrpc.client
 from dataclasses import dataclass, field
 from typing import Optional
 
-from relay import RelayController, RelayControllerConfig
+from .relay import RelayController, RelayControllerConfig
 
 # Unitnaam -> nummer, zoals de dispenser ze kent.
 UNITS: dict[str, int] = {
@@ -214,7 +218,8 @@ class DuurTest:
 
 
 if __name__ == "__main__":
-    # Los draaien zonder GUI.
+    # Los draaien zonder GUI: python -m duurtest.testDriver
+    # Deze instellingen vervangen dan wat je normaal in het venster invult.
     test = DuurTest(TestSettings(
         port="COM11",
         baudrate=115200,

@@ -8,10 +8,8 @@ testDriver.py.
 
     Duurtest_GUI.ui  <->  gui.py  <->  testDriver.py  <->  relay.py
 
-Benodigd:
-    pip install PySide6 pyserial
-Starten:
-    python gui.py
+Starten gaat via main.py in de map hierboven:
+    python main.py
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from PySide6 import QtCore, QtWidgets
 from PySide6.QtUiTools import QUiLoader
 from serial.tools import list_ports
 
-from testDriver import DuurTest, TestSettings
+from .testDriver import DuurTest, TestSettings
 
 UI_FILE = Path(__file__).with_name("Duurtest_GUI.ui")
 
@@ -208,12 +206,9 @@ class DuurtestGUI(QtCore.QObject):
 
 
 def main() -> int:
+    """Start het venster; wordt aangeroepen vanuit main.py."""
     app = QtWidgets.QApplication(sys.argv)
     window = DuurtestGUI()
     app.aboutToQuit.connect(window.shutdown)
     window.show()
     return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
