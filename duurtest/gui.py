@@ -254,6 +254,12 @@ class DuurtestGUI(QtCore.QObject):
     # ------------------------------------------------------------------
     def start_test(self) -> None:
         """Hand the settings to the driver and switch to the progress page."""
+        # The Start button sits on the settings page, so it cannot normally be
+        # pressed while a test runs. Guard anyway: two tests at once would
+        # fight over the relay and mix their log files.
+        if self.test is not None and self.test.running:
+            return
+
         settings = self.read_settings()
 
         # The driver decides what counts as valid; this layer only reports

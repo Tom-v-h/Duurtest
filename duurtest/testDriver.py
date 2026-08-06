@@ -14,7 +14,8 @@ One test run consists of:
 
     relay on -> wait -> connect dispenser
     for every dispense:
-        pick a unit and an amount, dispense it, wait
+        pick a unit and an amount, dispense it
+        wait until that unit reports IDLE again
         after every power_cycle_interval dispenses: relay off, on, reconnect
     relay off -> disconnect
 
@@ -61,11 +62,22 @@ FILL_LEVEL = 3800          # value passed to correctFillLevel
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
-# Reactive timing: a dispense of N ml is given DISPENSE_DELAY seconds plus
-# DISPENSE_DELAY_PER_ML per ml, so a small dispense does not wait as long as
-# a large one.
-DISPENSE_DELAY = 5.0       # base wait after a dispense
-DISPENSE_DELAY_PER_ML = 0.2
+# Instead of guessing how long a dispense takes, the unit is asked:
+# UnitStatus() answers "IDLE" or "DISPENSING", and the next round starts once
+# it is idle again.
+STATUS_IDLE = "IDLE"
+STATUS_POLL_INTERVAL = 0.5   # how often the unit is asked for its status
+
+# A unit does not report DISPENSING the instant the command is sent, so an
+# IDLE answer right after starting means "not started yet" rather than
+# "finished". Only after this long without ever seeing it busy is a dispense
+# taken to be done. Waiting costs nothing when the unit does report DISPENSING
+# in time, so this is generous on purpose; if the log keeps saying a dispense
+# was never seen running, raise it.
+DISPENSE_START_GRACE = 5.0
+
+# A unit that never returns to IDLE would keep the test waiting forever.
+DISPENSE_TIMEOUT = 600.0
 
 POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
 
@@ -168,15 +180,24 @@ class _LoggedServer:
     is logged too, and the loop stays readable.
     """
 
+    # Waiting for a unit asks for its status twice a second, which would bury
+    # everything else: a dispense of a hundred seconds is four hundred lines
+    # saying the same thing. Those go to debug level, so the file keeps the
+    # story ("CX01 is begonnen", "CX01 is klaar na 98.5 s") while every single
+    # exchange is still there when logging runs at DEBUG. Failures are always
+    # logged, however often the call is made.
+    QUIET_CALLS = {"UnitStatus"}
+
     def __init__(self, server):
         self._server = server
 
     def __getattr__(self, name: str):
         method = getattr(self._server, name)
+        level = logging.DEBUG if name in self.QUIET_CALLS else logging.INFO
 
         def call(*args):
             arguments = ", ".join(repr(a) for a in args)
-            dispenser_log.info("TX  %s(%s)", name, arguments)
+            dispenser_log.log(level, "TX  %s(%s)", name, arguments)
             started = time.time()
             try:
                 result = method(*args)
@@ -188,9 +209,9 @@ class _LoggedServer:
                 dispenser_log.error("RX  %s mislukt na %.0f ms: %s",
                                     name, (time.time() - started) * 1000, exc)
                 raise
-            dispenser_log.info("RX  %s -> %s   (%.0f ms)",
-                               name, "ok" if result is None else repr(result),
-                               (time.time() - started) * 1000)
+            dispenser_log.log(level, "RX  %s -> %s   (%.0f ms)",
+                              name, "ok" if result is None else repr(result),
+                              (time.time() - started) * 1000)
             return result
 
         return call
@@ -231,7 +252,6 @@ class DuurTest:
         self.relay = None                              # created by _loop()
         self._log_handler: Optional[logging.Handler] = None
         self._stop = False                             # stop requested
-        self._busy_until = 0.0                         # when the running dispense ends
         self._thread: Optional[threading.Thread] = None
         # Held by whichever thread is talking to the relay, so stop() can cut
         # the power without landing in the middle of a command.
@@ -379,19 +399,12 @@ class DuurTest:
 
                 self._prepare_dispense(server, unit, amount)
                 garbled = self._start_dispense(server)
-
-                # Reactive timing: bigger dispense, longer wait. _busy_until
-                # records when the unit should be done, so the shutdown below
-                # knows whether it is still running.
-                wait = DISPENSE_DELAY + amount * DISPENSE_DELAY_PER_ML
-                self._busy_until = time.monotonic() + wait
-                self._sleep(wait)
-
                 if garbled:
                     # The reply was unreadable, so the connection is out of
-                    # step. Resync now that the unit has had its time, so the
-                    # next round starts clean.
+                    # step. Resync before asking the unit anything else.
                     self._resync(server)
+
+                self._wait_until_idle(server, unit)
 
                 self.percentage = int(done / total * 100)
 
@@ -466,6 +479,74 @@ class DuurTest:
                         fault.faultString)
             return True
 
+    @staticmethod
+    def _unit_status(server, unit: str) -> str:
+        """
+        Ask the unit for its status. Answers "IDLE" or "DISPENSING".
+
+        This is the one place that knows the shape of the call. Should the
+        server want the unit number instead of the name, or both, this is the
+        line to change:
+
+            server.UnitStatus(UNITS[unit])          # number only
+            server.UnitStatus(unit, UNITS[unit])    # name and number
+        """
+        return server.UnitStatus(unit)
+
+    def _wait_until_idle(self, server, unit: str) -> None:
+        """
+        Wait until the unit reports IDLE again, rather than guessing how long
+        a dispense of this size takes.
+
+        Two things make this more than a single check. A unit needs a moment
+        to start, so an IDLE answer straight after the command means it has
+        not begun yet: only once DISPENSE_START_GRACE has passed without ever
+        seeing it busy is the dispense taken to be finished. And a garbled
+        reply is not fatal here, since asking for a status changes nothing:
+        the connection is resynced and the next poll tries again.
+        """
+        started = time.monotonic()
+        seen_busy = False
+        status = "?"
+
+        while True:
+            self._check_stop()
+
+            try:
+                status = str(self._unit_status(server, unit)).strip().upper()
+            except xmlrpc.client.Fault as fault:
+                # Unreadable answer; resync and ask again on the next poll.
+                self.resyncs += 1
+                log.warning("Onleesbaar antwoord op UnitStatus(%s), opnieuw verbinden: %s",
+                            unit, fault.faultString)
+                self._resync(server)
+                status = "?"
+            else:
+                if status == STATUS_IDLE:
+                    if seen_busy:
+                        log.info("%s is klaar na %.1f s", unit, time.monotonic() - started)
+                        return
+                    if time.monotonic() - started >= DISPENSE_START_GRACE:
+                        # Never seen busy. Either the dispense was over before
+                        # the first poll, or the unit takes longer than the
+                        # grace period to report it. Worth saying out loud:
+                        # in the second case the test moves on too early.
+                        log.warning("%s meldde nooit %s binnen %.1f s; dispense als klaar beschouwd",
+                                    unit, "DISPENSING", DISPENSE_START_GRACE)
+                        return
+                elif not seen_busy:
+                    seen_busy = True
+                    log.info("%s is begonnen (status %s)", unit, status)
+
+            if time.monotonic() - started > DISPENSE_TIMEOUT:
+                raise TimeoutError(
+                    f"{unit} staat na {DISPENSE_TIMEOUT:.0f} s nog niet op {STATUS_IDLE} "
+                    f"(laatste status: {status})"
+                )
+
+            self.message = (f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)")
+            self._sleep(STATUS_POLL_INTERVAL)
+
     def _resync(self, server) -> None:
         """
         Reconnect to the dispenser so a half-read frame is discarded.
@@ -505,9 +586,12 @@ class DuurTest:
         That one raises as soon as Stop has been pressed, which would skip
         exactly the wait that matters here.
 
-        Note that this is a fixed pause, so pressing Stop halfway through a
-        large dispense still cuts the power while the unit is running. Wait
-        for the dispense to finish first by using self._busy_until here.
+        Note that this is a fixed pause. A run that finishes normally has
+        already waited for the unit to report IDLE, so nothing is running by
+        then; pressing Stop halfway through a dispense does cut the power
+        while the unit is busy. Waiting for it would mean calling
+        _wait_until_idle() here, at the cost of a Stop that takes as long as
+        the dispense still needs.
         """
         self.message = "Spanning gaat eraf..."
         time.sleep(POWER_OFF_DELAY)
