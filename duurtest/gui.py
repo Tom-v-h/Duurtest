@@ -345,6 +345,7 @@ def main() -> int:
     Returns the exit code; called from main.py in the directory above.
     """
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
     window = DuurtestGUI()
     app.aboutToQuit.connect(window.shutdown)
     window.show()
