@@ -86,12 +86,12 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Number of dispenses | totaal aantal dispenses in de test |
 | Power cycle interval | na elke N dispenses gaat de spanning eraf en weer aan, 0 = uit |
 | Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max |
+| Unit List | welke units meedoen; per dispense wordt er willekeurig één gekozen |
 
 Na elke dispense vraagt de driver de unit met `UnitStatus()` om zijn status en
 wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste wachttijd
 gewerkt: een kleine dispense gaat meteen door, een grote krijgt de tijd die
 hij nodig heeft.
-| Unit List | welke units meedoen; per dispense wordt er willekeurig één gekozen |
 
-De dispenser zelf (xmlrpc-server op COM12) staat als constante bovenin
+De dispenser zelf (de xmlrpc-server en zijn poort) staat als constante bovenin
 `duurtest/testDriver.py`.
