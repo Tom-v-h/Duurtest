@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtuele omgevingen
+.venv/
+venv/
+env/
+
+# Editors
+.vscode/
+.idea/
+
+# Logbestanden van testruns
+logs/
