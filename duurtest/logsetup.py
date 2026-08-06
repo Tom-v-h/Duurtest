@@ -13,8 +13,15 @@ The loggers used elsewhere in the package:
     duurtest.dispenser    calls to the xmlrpc dispenser
     duurtest.testDriver   the test itself: start, dispenses, power cycles
 
+Two kinds of file are written:
+
+    logs/duurtest_<date>_<time>.log   one per start of the application,
+                                      holds everything from that session
+    logs/run_<date>_<time>.log        one per test run, holds just that run
+
 setup_logging() is called once at start-up, from main.py or from the
-__main__ block in testDriver.py.
+__main__ block in testDriver.py. start_run_log() and stop_run_log() are
+called by the driver around each run.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Log files are written next to the application, not inside the package.
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -31,6 +39,26 @@ LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 # can be only a few tens of milliseconds apart.
 LOG_FORMAT = "%(asctime)s.%(msecs)03d  %(name)-20s %(levelname)-7s %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _new_logfile(prefix: str) -> Path:
+    """
+    Path for a new log file, named after the moment it was created:
+
+        logs/run_2026-08-06_14-30-12.log
+
+    Two runs started within the same second would otherwise share a name and
+    end up in one file, so a counter is added when the name is taken.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = f"{datetime.now():%Y-%m-%d_%H-%M-%S}"
+
+    logfile = LOG_DIR / f"{prefix}_{stamp}.log"
+    counter = 2
+    while logfile.exists():
+        logfile = LOG_DIR / f"{prefix}_{stamp}_{counter}.log"
+        counter += 1
+    return logfile
 
 
 def setup_logging(level: int = logging.INFO, to_console: bool = True) -> Path:
@@ -44,8 +72,7 @@ def setup_logging(level: int = logging.INFO, to_console: bool = True) -> Path:
 
     Calling this twice replaces the handlers rather than doubling every line.
     """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logfile = LOG_DIR / f"duurtest_{datetime.now():%Y-%m-%d_%H-%M-%S}.log"
+    logfile = _new_logfile("duurtest")
 
     formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 
@@ -69,3 +96,30 @@ def setup_logging(level: int = logging.INFO, to_console: bool = True) -> Path:
 
     root.info("Log gestart: %s", logfile)
     return logfile
+
+
+def start_run_log() -> tuple[Path, logging.Handler]:
+    """
+    Open an extra log file holding one test run, and return its path along
+    with the handler that writes it.
+
+    The session log keeps everything together, but one file per run is what
+    you want when handing a single test to someone else, or when looking for
+    the run that went wrong. Pass the handler to stop_run_log() when the run
+    has ended.
+    """
+    logfile = _new_logfile("run")
+
+    handler = logging.FileHandler(logfile, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+    logging.getLogger("duurtest").addHandler(handler)
+    return logfile, handler
+
+
+def stop_run_log(handler: Optional[logging.Handler]) -> None:
+    """Close the log file of a single run. Does nothing when there is none."""
+    if handler is None:
+        return
+    logger = logging.getLogger("duurtest")
+    logger.removeHandler(handler)
+    handler.close()

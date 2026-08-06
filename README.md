@@ -42,12 +42,16 @@ De instellingen die je normaal in het venster invult staan dan onderaan
 
 ## Logging
 
-Elke keer dat je de applicatie start wordt er een logbestand aangemaakt in
-`logs/`, met de starttijd in de naam:
+In `logs/` komen twee soorten bestanden, allebei met het tijdstip in de naam:
 
 ```
-logs/duurtest_2026-08-06_14-30-12.log
+logs/duurtest_2026-08-06_14-30-12.log   alles van één keer het programma starten
+logs/run_2026-08-06_14-31-05.log        één testrun
 ```
+
+Elke keer dat je op Start drukt komt er een `run_`-bestand bij met alleen die
+run erin. Het `duurtest_`-bestand loopt daarnaast door en bevat alles van die
+sessie.
 
 Daarin staat alle communicatie met beide apparaten, met een tijdstempel tot op
 de milliseconde:

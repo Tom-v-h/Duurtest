@@ -32,8 +32,10 @@ import threading
 import time
 import xmlrpc.client
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
+from .logsetup import start_run_log, stop_run_log
 from .relay import RelayController, RelayControllerConfig
 
 log = logging.getLogger(__name__)                    # the test itself
@@ -224,8 +226,10 @@ class DuurTest:
         self.message = ""                   # last status line, for the status bar
         self.error: Optional[str] = None    # set when the test failed
         self.resyncs = 0                    # times the dispenser had to be reconnected
+        self.logfile: Optional[Path] = None  # log file of this run
 
         self.relay = None                              # created by _loop()
+        self._log_handler: Optional[logging.Handler] = None
         self._stop = False                             # stop requested
         self._busy_until = 0.0                         # when the running dispense ends
         self._thread: Optional[threading.Thread] = None
@@ -247,6 +251,10 @@ class DuurTest:
         if error:
             log.error("Test niet gestart: %s", error)
             raise ValueError(error)
+
+        # A file per run, opened before the first line is written so the whole
+        # run ends up in it. The session log keeps receiving everything too.
+        self.logfile, self._log_handler = start_run_log()
 
         s = self.settings
         log.info("=" * 70)
@@ -323,6 +331,11 @@ class DuurTest:
             # than the one line the GUI shows.
             log.exception("Test afgebroken door een fout: %s", exc)
         finally:
+            log.info("Log van deze run: %s", self.logfile)
+            # Close this run's file before running is cleared, so the file is
+            # complete by the time the GUI reports the test as finished.
+            stop_run_log(self._log_handler)
+            self._log_handler = None
             # Set last, so the GUI sees the final status in the same poll in
             # which it notices the test has ended.
             self.running = False
