@@ -252,8 +252,8 @@ class DuurTest:
             log.error("Test niet gestart: %s", error)
             raise ValueError(error)
 
-        # A file per run, opened before the first line is written so the whole
-        # run ends up in it. The session log keeps receiving everything too.
+        # The log file of this run, opened before the first line is written
+        # so the whole run ends up in it.
         self.logfile, self._log_handler = start_run_log()
 
         s = self.settings

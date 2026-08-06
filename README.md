@@ -42,16 +42,17 @@ De instellingen die je normaal in het venster invult staan dan onderaan
 
 ## Logging
 
-In `logs/` komen twee soorten bestanden, allebei met het tijdstip in de naam:
+Elke testrun krijgt zijn eigen bestand in `logs/`, met het tijdstip waarop hij
+begon in de naam:
 
 ```
-logs/duurtest_2026-08-06_14-30-12.log   alles van één keer het programma starten
-logs/run_2026-08-06_14-31-05.log        één testrun
+logs/duurtest_2026-08-06_14-31-05.log
+logs/duurtest_2026-08-06_15-02-48.log
 ```
 
-Elke keer dat je op Start drukt komt er een `run_`-bestand bij met alleen die
-run erin. Het `duurtest_`-bestand loopt daarnaast door en bevat alles van die
-sessie.
+Het bestand wordt geopend als je op Start drukt en gesloten als de test klaar
+is, dus één bestand is precies één duurtest. Tussen runs door wordt er niets
+weggeschreven.
 
 Daarin staat alle communicatie met beide apparaten, met een tijdstempel tot op
 de milliseconde:
