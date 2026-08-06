@@ -15,7 +15,7 @@ One test run consists of:
     relay on -> wait -> connect dispenser
     for every dispense:
         pick a unit and an amount, dispense it
-        wait until that unit reports IDLE again
+        wait until the machine reports IDLE again
         after every power_cycle_interval dispenses: relay off, on, reconnect
     relay off -> disconnect
 
@@ -62,21 +62,21 @@ FILL_LEVEL = 3800          # value passed to correctFillLevel
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
-# Instead of guessing how long a dispense takes, the unit is asked:
-# UnitStatus() answers "IDLE" or "DISPENSING", and the next round starts once
-# it is idle again.
+# Instead of guessing how long a dispense takes, the machine is asked:
+# getMachineStatus() answers "IDLE" or "DISPENSING", and the next round starts
+# once it is idle again. The answer covers the whole machine, not one unit.
 STATUS_IDLE = "IDLE"
-STATUS_POLL_INTERVAL = 0.5   # how often the unit is asked for its status
+STATUS_POLL_INTERVAL = 0.5   # how often the machine is asked for its status
 
-# A unit does not report DISPENSING the instant the command is sent, so an
-# IDLE answer right after starting means "not started yet" rather than
+# The machine does not report DISPENSING the instant the command is sent, so
+# an IDLE answer right after starting means "not started yet" rather than
 # "finished". Only after this long without ever seeing it busy is a dispense
-# taken to be done. Waiting costs nothing when the unit does report DISPENSING
-# in time, so this is generous on purpose; if the log keeps saying a dispense
-# was never seen running, raise it.
+# taken to be done. Waiting costs nothing when the machine does report
+# DISPENSING in time, so this is generous on purpose; if the log keeps saying a
+# dispense was never seen running, raise it.
 DISPENSE_START_GRACE = 5.0
 
-# A unit that never returns to IDLE would keep the test waiting forever.
+# A machine that never returns to IDLE would keep the test waiting forever.
 DISPENSE_TIMEOUT = 600.0
 
 POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
@@ -180,13 +180,13 @@ class _LoggedServer:
     is logged too, and the loop stays readable.
     """
 
-    # Waiting for a unit asks for its status twice a second, which would bury
-    # everything else: a dispense of a hundred seconds is four hundred lines
-    # saying the same thing. Those go to debug level, so the file keeps the
-    # story ("CX01 is begonnen", "CX01 is klaar na 98.5 s") while every single
-    # exchange is still there when logging runs at DEBUG. Failures are always
-    # logged, however often the call is made.
-    QUIET_CALLS = {"UnitStatus"}
+    # Waiting for a dispense asks the machine for its status twice a second,
+    # which would bury everything else: a dispense of a hundred seconds is four
+    # hundred lines saying the same thing. Those go to debug level, so the file
+    # keeps the story ("CX01 is begonnen", "CX01 is klaar na 98.5 s") while
+    # every single exchange is still there when logging runs at DEBUG.
+    # Failures are always logged, however often the call is made.
+    QUIET_CALLS = {"getMachineStatus"}
 
     def __init__(self, server):
         self._server = server
@@ -479,31 +479,21 @@ class DuurTest:
                         fault.faultString)
             return True
 
-    @staticmethod
-    def _unit_status(server, unit: str) -> str:
-        """
-        Ask the unit for its status. Answers "IDLE" or "DISPENSING".
-
-        This is the one place that knows the shape of the call. Should the
-        server want the unit number instead of the name, or both, this is the
-        line to change:
-
-            server.UnitStatus(UNITS[unit])          # number only
-            server.UnitStatus(unit, UNITS[unit])    # name and number
-        """
-        return server.UnitStatus(unit)
-
     def _wait_until_idle(self, server, unit: str) -> None:
         """
-        Wait until the unit reports IDLE again, rather than guessing how long
-        a dispense of this size takes.
+        Wait until the machine reports IDLE again, rather than guessing how
+        long a dispense of this size takes.
 
-        Two things make this more than a single check. A unit needs a moment
-        to start, so an IDLE answer straight after the command means it has
-        not begun yet: only once DISPENSE_START_GRACE has passed without ever
-        seeing it busy is the dispense taken to be finished. And a garbled
-        reply is not fatal here, since asking for a status changes nothing:
-        the connection is resynced and the next poll tries again.
+        getMachineStatus() takes no arguments and describes the machine as a
+        whole; unit is only used to say in the log which dispense was being
+        waited on.
+
+        Two things make this more than a single check. The machine needs a
+        moment to start, so an IDLE answer straight after the command means it
+        has not begun yet: only once DISPENSE_START_GRACE has passed without
+        ever seeing it busy is the dispense taken to be finished. And a
+        garbled reply is not fatal here, since asking for a status changes
+        nothing: the connection is resynced and the next poll tries again.
         """
         started = time.monotonic()
         seen_busy = False
@@ -513,12 +503,12 @@ class DuurTest:
             self._check_stop()
 
             try:
-                status = str(self._unit_status(server, unit)).strip().upper()
+                status = str(server.getMachineStatus()).strip().upper()
             except xmlrpc.client.Fault as fault:
                 # Unreadable answer; resync and ask again on the next poll.
                 self.resyncs += 1
-                log.warning("Onleesbaar antwoord op UnitStatus(%s), opnieuw verbinden: %s",
-                            unit, fault.faultString)
+                log.warning("Onleesbaar antwoord op getMachineStatus(), opnieuw verbinden: %s",
+                            fault.faultString)
                 self._resync(server)
                 status = "?"
             else:
@@ -528,23 +518,24 @@ class DuurTest:
                         return
                     if time.monotonic() - started >= DISPENSE_START_GRACE:
                         # Never seen busy. Either the dispense was over before
-                        # the first poll, or the unit takes longer than the
+                        # the first poll, or the machine takes longer than the
                         # grace period to report it. Worth saying out loud:
                         # in the second case the test moves on too early.
-                        log.warning("%s meldde nooit %s binnen %.1f s; dispense als klaar beschouwd",
-                                    unit, "DISPENSING", DISPENSE_START_GRACE)
+                        log.warning("Machine meldde nooit DISPENSING binnen %.1f s; "
+                                    "dispense van %s als klaar beschouwd",
+                                    DISPENSE_START_GRACE, unit)
                         return
                 elif not seen_busy:
                     seen_busy = True
-                    log.info("%s is begonnen (status %s)", unit, status)
+                    log.info("%s is begonnen (machinestatus %s)", unit, status)
 
             if time.monotonic() - started > DISPENSE_TIMEOUT:
                 raise TimeoutError(
-                    f"{unit} staat na {DISPENSE_TIMEOUT:.0f} s nog niet op {STATUS_IDLE} "
-                    f"(laatste status: {status})"
+                    f"De machine staat na {DISPENSE_TIMEOUT:.0f} s nog niet op "
+                    f"{STATUS_IDLE} (laatste status: {status})"
                 )
 
-            self.message = (f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)")
+            self.message = f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)"
             self._sleep(STATUS_POLL_INTERVAL)
 
     def _resync(self, server) -> None:

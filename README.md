@@ -88,10 +88,10 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max |
 | Unit List | welke units meedoen; per dispense wordt er willekeurig één gekozen |
 
-Na elke dispense vraagt de driver de unit met `UnitStatus()` om zijn status en
-wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste wachttijd
-gewerkt: een kleine dispense gaat meteen door, een grote krijgt de tijd die
-hij nodig heeft.
+Na elke dispense vraagt de driver de machine met `getMachineStatus()` om zijn
+status en wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste
+wachttijd gewerkt: een kleine dispense gaat meteen door, een grote krijgt de
+tijd die hij nodig heeft.
 
 De dispenser zelf (de xmlrpc-server en zijn poort) staat als constante bovenin
 `duurtest/testDriver.py`.
