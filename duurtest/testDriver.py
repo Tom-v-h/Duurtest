@@ -47,7 +47,7 @@ UNITS: dict[str, int] = {
 # Connection to the dispenser. This is a separate xmlrpc service on its own
 # serial port, unrelated to the relay port picked in the GUI.
 DISPENSER_URL = "http://localhost:9111/"
-DISPENSER_PORT = "COM16"
+DISPENSER_PORT = "COM6"
 DISPENSER_ADDRESS = "0x0002"
 DISPENSER_BAUDRATE = 19200
 
@@ -173,6 +173,8 @@ class DuurTest:
         Only sets a flag; the loop checks it between steps and while
         waiting, so a dispense in progress is never cut in half.
         """
+        self._power_off(self.relay)
+        self.relay.disconnect()
         self._stop = True
 
     def wait(self, timeout: Optional[float] = None) -> None:
@@ -218,16 +220,16 @@ class DuurTest:
         config = RelayControllerConfig()
         config.port = settings.port
         config.baudrate = settings.baudrate
-        relay = RelayController(config)
+        self.relay = RelayController(config)
 
         self.message = f"Verbinden met relay op {settings.port}..."
-        relay.connect()
+        self.relay.connect()
 
         # ServerProxy does not talk to the network yet; the first call does.
         server = xmlrpc.client.ServerProxy(DISPENSER_URL, allow_none=True)
 
         try:
-            self._power_on(relay, server)
+            self._power_on(self.relay, server)
 
             for done in range(1, total + 1):
                 self._check_stop()
@@ -238,7 +240,7 @@ class DuurTest:
 
                 self._prepare_dispense(server, unit, amount)
                 garbled = self._start_dispense(server)
-                self._sleep(DISPENSE_DELAY)
+                self._sleep(DISPENSE_DELAY + (amount * 0.2))
                 if garbled:
                     # The reply was unreadable, so the connection is out of
                     # step. Resync now that the unit has had its time, so the
@@ -251,13 +253,14 @@ class DuurTest:
                 # the finally block switches the power off anyway.
                 if interval and done % interval == 0 and done < total:
                     self.message = f"Power cycle na {done} dispenses"
-                    self._power_off(relay)
+                    self._power_off(self.relay)
                     self._sleep(POWER_OFF_DELAY)
-                    self._power_on(relay, server)
+                    self._power_on(self.relay, server)
         finally:
             # Runs on a normal finish, on stop and on an error, so the units
             # are never left powered.
-            self._power_off(relay)
+            self._sleep(POWER_OFF_DELAY)
+            self._power_off(self.relay)
             relay.disconnect()
 
     # -- talking to the dispenser -----------------------------------
