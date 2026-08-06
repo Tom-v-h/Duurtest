@@ -35,7 +35,7 @@
      <string/>
     </property>
     <property name="pixmap">
-     <pixmap>//vdlgroep.local/home/VIM/TomvanHeeswijk/Documents/My Pictures/Camera Roll/VDl_logo.png</pixmap>
+     <pixmap>VDl_logo.png</pixmap>
     </property>
     <property name="scaledContents">
      <bool>true</bool>
