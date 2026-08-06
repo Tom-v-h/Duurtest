@@ -322,10 +322,15 @@ class DuurtestGUI(QtCore.QObject):
         Stop a running test when the application closes, and wait for the
         thread so the relay is switched off before the process exits.
         Connected to QApplication.aboutToQuit in main().
+
+        The wait has to outlast the driver's own settle pause before the
+        relay goes off. The test thread is a daemon, so a shorter wait would
+        let Python kill it halfway through switching off, leaving the units
+        powered.
         """
         if self.test is not None and self.test.running:
             self.test.stop()
-            self.test.wait(10)
+            self.test.wait(30)
 
 
 def main() -> int:

@@ -53,8 +53,15 @@ DISPENSER_BAUDRATE = 19200
 
 FILL_LEVEL = 3800          # value passed to correctFillLevel
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
-DISPENSE_DELAY = 5.0      # wait after a dispense until it has finished
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
+
+# Reactive timing: a dispense of N ml is given DISPENSE_DELAY seconds plus
+# DISPENSE_DELAY_PER_ML per ml, so a small dispense does not wait as long as
+# a large one.
+DISPENSE_DELAY = 5.0       # base wait after a dispense
+DISPENSE_DELAY_PER_ML = 0.2
+
+POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
 
 # A long dispense keeps the unit busy for a while, and the reply frame that
 # comes back afterwards is sometimes unreadable. Rather than ending the test,
@@ -146,7 +153,9 @@ class DuurTest:
         self.error: Optional[str] = None    # set when the test failed
         self.resyncs = 0                    # times the dispenser had to be reconnected
 
+        self.relay = None                              # created by _loop()
         self._stop = False                             # stop requested
+        self._busy_until = 0.0                         # when the running dispense ends
         self._thread: Optional[threading.Thread] = None
 
     # -- control ----------------------------------------------------
@@ -172,9 +181,14 @@ class DuurTest:
 
         Only sets a flag; the loop checks it between steps and while
         waiting, so a dispense in progress is never cut in half.
+
+        Switching the relay off is deliberately left to the test thread. It
+        is called from the GUI thread, and the serial port belongs to the
+        thread running the test: sending OFF from here could land in the
+        middle of a command that thread is still writing, and closing the
+        port under it makes its next call fail. The shutdown in _loop()
+        always runs, on a normal finish, on a stop and on an error.
         """
-        self._power_off(self.relay)
-        self.relay.disconnect()
         self._stop = True
 
     def wait(self, timeout: Optional[float] = None) -> None:
@@ -240,7 +254,14 @@ class DuurTest:
 
                 self._prepare_dispense(server, unit, amount)
                 garbled = self._start_dispense(server)
-                self._sleep(DISPENSE_DELAY + (amount * 0.2))
+
+                # Reactive timing: bigger dispense, longer wait. _busy_until
+                # records when the unit should be done, so the shutdown below
+                # knows whether it is still running.
+                wait = DISPENSE_DELAY + amount * DISPENSE_DELAY_PER_ML
+                self._busy_until = time.monotonic() + wait
+                self._sleep(wait)
+
                 if garbled:
                     # The reply was unreadable, so the connection is out of
                     # step. Resync now that the unit has had its time, so the
@@ -259,9 +280,9 @@ class DuurTest:
         finally:
             # Runs on a normal finish, on stop and on an error, so the units
             # are never left powered.
-            self._sleep(POWER_OFF_DELAY)
+            self._settle()
             self._power_off(self.relay)
-            relay.disconnect()
+            self.relay.disconnect()
 
     # -- talking to the dispenser -----------------------------------
     def _prepare_dispense(self, server, unit: str, amount: int) -> None:
@@ -341,17 +362,41 @@ class DuurTest:
         server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
         server.poll()
 
+    def _settle(self) -> None:
+        """
+        Short pause before the power is cut, giving a unit a moment to come
+        to rest: pulling the mains on a busy machine is what leaves it in a
+        glitched state.
+
+        Uses time.sleep() rather than the loop's own wait helper on purpose.
+        That one raises as soon as Stop has been pressed, which would skip
+        exactly the wait that matters here.
+
+        Note that this is a fixed pause, so pressing Stop halfway through a
+        large dispense still cuts the power while the unit is running. Wait
+        for the dispense to finish first by using self._busy_until here.
+        """
+        self.message = "Spanning gaat eraf..."
+        time.sleep(POWER_OFF_DELAY)
+
     @staticmethod
     def _power_off(relay) -> None:
         """
-        Switch the power off. Never raises: this also runs while handling an
-        error, and a second failure there would hide the original one.
+        Switch the power off, retrying a few times.
+
+        Never raises: this also runs while handling an error, and a second
+        failure here would hide the original one. It does try more than once,
+        because silently giving up leaves the machine powered, which is worse
+        than a slow shutdown.
         """
-        try:
-            if relay.is_connected:
+        for attempt in range(POWER_OFF_ATTEMPTS):
+            try:
+                if not relay.is_connected:
+                    return
                 relay.turn_off()
-        except Exception:                        # noqa: BLE001 - shutting down wins
-            pass
+                return
+            except Exception:                    # noqa: BLE001 - shutting down wins
+                time.sleep(0.2)
 
     def _check_stop(self) -> None:
         """Raise _Stopped when stop() has been called."""
