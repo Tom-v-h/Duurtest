@@ -63,6 +63,17 @@ DISPENSE_DELAY_PER_ML = 0.2
 
 POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
 
+# Stop has to be able to cut the power even while the test thread is busy,
+# so both threads take _relay_lock before touching the relay. Commands to the
+# relay are bounded by the timeouts in relay.py, about a second, so the lock
+# is never held long; this is how long Stop waits for it.
+RELAY_LOCK_TIMEOUT = 3.0
+
+# The dispenser calls have no timeout of their own, so a server that stops
+# answering would block the test thread forever. This is a safety net, not a
+# tight bound: it has to be longer than the slowest legitimate call.
+DISPENSER_TIMEOUT = 300.0
+
 # A long dispense keeps the unit busy for a while, and the reply frame that
 # comes back afterwards is sometimes unreadable. Rather than ending the test,
 # the driver reconnects and tries the call again this many times.
@@ -122,6 +133,25 @@ class TestSettings:
         return self.dispense_amount
 
 
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """
+    xmlrpc transport that puts a timeout on the connection.
+
+    ServerProxy has no timeout parameter, so without this a dispenser that
+    stops answering leaves the test thread waiting on a socket read for as
+    long as the application runs.
+    """
+
+    def __init__(self, timeout: float, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.timeout = timeout
+
+    def make_connection(self, host):
+        connection = super().make_connection(host)
+        connection.timeout = self.timeout
+        return connection
+
+
 class _Stopped(Exception):
     """
     Raised internally when stop() has been called.
@@ -157,6 +187,9 @@ class DuurTest:
         self._stop = False                             # stop requested
         self._busy_until = 0.0                         # when the running dispense ends
         self._thread: Optional[threading.Thread] = None
+        # Held by whichever thread is talking to the relay, so stop() can cut
+        # the power without landing in the middle of a command.
+        self._relay_lock = threading.Lock()
 
     # -- control ----------------------------------------------------
     def start(self) -> None:
@@ -179,17 +212,25 @@ class DuurTest:
         """
         Ask the test to stop after the step that is currently running.
 
-        Only sets a flag; the loop checks it between steps and while
-        waiting, so a dispense in progress is never cut in half.
+        Sets the flag the loop checks between steps, and switches the power
+        off right here rather than leaving that to the test thread.
 
-        Switching the relay off is deliberately left to the test thread. It
-        is called from the GUI thread, and the serial port belongs to the
-        thread running the test: sending OFF from here could land in the
-        middle of a command that thread is still writing, and closing the
-        port under it makes its next call fail. The shutdown in _loop()
-        always runs, on a normal finish, on a stop and on an error.
+        That last part matters: if the test thread is stuck in a call to the
+        dispenser it never reaches its own shutdown, and the machine would
+        stay powered for as long as that call hangs. Stop has to work then
+        too, so it cuts the power itself.
+
+        Doing that from the GUI thread is safe because both threads take
+        _relay_lock before touching the relay. Waiting for the lock takes at
+        most about a second: relay commands are bounded by the timeouts in
+        relay.py. Closing the port is still left to the test thread, which
+        owns it.
         """
         self._stop = True
+        if not self._power_off_now():
+            # The test thread is holding the relay; its own shutdown will
+            # switch off in a moment.
+            self.message = "Stoppen, relay is bezig..."
 
     def wait(self, timeout: Optional[float] = None) -> None:
         """Block until the test thread has ended, or until timeout seconds."""
@@ -237,10 +278,16 @@ class DuurTest:
         self.relay = RelayController(config)
 
         self.message = f"Verbinden met relay op {settings.port}..."
-        self.relay.connect()
+        with self._relay_lock:
+            self.relay.connect()
 
         # ServerProxy does not talk to the network yet; the first call does.
-        server = xmlrpc.client.ServerProxy(DISPENSER_URL, allow_none=True)
+        # The transport carries a timeout so a dispenser that stops answering
+        # cannot block this thread indefinitely.
+        server = xmlrpc.client.ServerProxy(
+            DISPENSER_URL, allow_none=True,
+            transport=_TimeoutTransport(DISPENSER_TIMEOUT),
+        )
 
         try:
             self._power_on(self.relay, server)
@@ -274,15 +321,17 @@ class DuurTest:
                 # the finally block switches the power off anyway.
                 if interval and done % interval == 0 and done < total:
                     self.message = f"Power cycle na {done} dispenses"
-                    self._power_off(self.relay)
+                    self._power_off_now()
                     self._sleep(POWER_OFF_DELAY)
                     self._power_on(self.relay, server)
         finally:
             # Runs on a normal finish, on stop and on an error, so the units
-            # are never left powered.
+            # are never left powered. stop() may have switched off already;
+            # sending OFF twice does no harm.
             self._settle()
-            self._power_off(self.relay)
-            self.relay.disconnect()
+            self._power_off_now()
+            with self._relay_lock:
+                self.relay.disconnect()
 
     # -- talking to the dispenser -----------------------------------
     def _prepare_dispense(self, server, unit: str, amount: int) -> None:
@@ -356,7 +405,8 @@ class DuurTest:
         The dispenser loses power together with the units, so after every
         power cycle it has to be connected and polled again.
         """
-        relay.turn_on()
+        with self._relay_lock:
+            relay.turn_on()
         self._sleep(POWER_ON_DELAY)
         self.message = f"Verbinden met dispenser op {DISPENSER_PORT}..."
         server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
@@ -379,10 +429,30 @@ class DuurTest:
         self.message = "Spanning gaat eraf..."
         time.sleep(POWER_OFF_DELAY)
 
+    def _power_off_now(self) -> bool:
+        """
+        Take the relay lock and switch the power off.
+
+        Called by the test thread when it shuts down or power cycles, and by
+        stop() from the GUI thread. Returns False when the lock could not be
+        taken within RELAY_LOCK_TIMEOUT, which means the other thread is busy
+        with the relay and will finish its own shutdown shortly.
+        """
+        if self.relay is None:
+            return True
+        if not self._relay_lock.acquire(timeout=RELAY_LOCK_TIMEOUT):
+            return False
+        try:
+            self._power_off(self.relay)
+        finally:
+            self._relay_lock.release()
+        return True
+
     @staticmethod
     def _power_off(relay) -> None:
         """
-        Switch the power off, retrying a few times.
+        Switch the power off, retrying a few times. Call through
+        _power_off_now() so the relay lock is held.
 
         Never raises: this also runs while handling an error, and a second
         failure here would hide the original one. It does try more than once,
