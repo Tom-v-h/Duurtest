@@ -20,10 +20,12 @@ python main.py
 
 ```
 main.py                  startpunt van de applicatie
+logs/                    logbestanden, één per keer dat je de applicatie start
 duurtest/
 ├── gui.py               leest het venster uit en toont de status
 ├── testDriver.py        de testloop, draait in een eigen thread
 ├── relay.py             seriële communicatie met de STM32-relay
+├── logsetup.py          zet de logging op
 └── Duurtest_GUI.ui      het venster, te bewerken in Qt Designer
 ```
 
@@ -37,6 +39,38 @@ python -m duurtest.testDriver
 
 De instellingen die je normaal in het venster invult staan dan onderaan
 `testDriver.py` hardgecodeerd.
+
+## Logging
+
+Elke keer dat je de applicatie start wordt er een logbestand aangemaakt in
+`logs/`, met de starttijd in de naam:
+
+```
+logs/duurtest_2026-08-06_14-30-12.log
+```
+
+Daarin staat alle communicatie met beide apparaten, met een tijdstempel tot op
+de milliseconde:
+
+```
+2026-08-06 14:30:15.128  duurtest.relay       INFO    TX  ON
+2026-08-06 14:30:15.140  duurtest.relay       INFO    RX  Relay is ON   (12 ms)
+2026-08-06 14:30:25.191  duurtest.dispenser   INFO    TX  prepareUnitForDispense('CX01', 192)
+2026-08-06 14:30:25.204  duurtest.dispenser   INFO    RX  prepareUnitForDispense -> True   (13 ms)
+2026-08-06 14:30:25.205  duurtest.dispenser   ERROR   RX  poll FOUT na 41 ms: Expected encrypted string ...
+```
+
+`TX` is wat de PC verstuurt, `RX` wat er terugkomt, met daarachter hoe lang het
+duurde. De drie bronnen zijn te herkennen aan hun naam:
+
+| Naam | Wat er gelogd wordt |
+| --- | --- |
+| `duurtest.relay` | seriële commando's naar de STM32 en zijn antwoorden |
+| `duurtest.dispenser` | elke xmlrpc-aanroep naar de dispenser en het resultaat |
+| `duurtest.testDriver` | de test zelf: start, elke dispense, powercycles, fouten |
+
+Wil je ook de ruwe bytes van de seriële poort zien, start dan met
+`setup_logging(level=logging.DEBUG)` in `main.py`.
 
 ## Instellingen in het venster
 

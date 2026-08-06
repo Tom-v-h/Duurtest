@@ -7,10 +7,15 @@ text commands (ON, OFF, TOGGLE, STATUS, HELP) and answers with a line of
 text followed by a '>' prompt.
 """
 
+import logging
 import serial
 from serial import SerialException
 import time
 from typing import Optional
+
+# Everything sent to and received from the STM32 goes through here, so the
+# log file shows the traffic on the serial port.
+log = logging.getLogger(__name__)
 
 class RelayControllerConfig:
     """
@@ -41,10 +46,12 @@ class RelayController:
                     timeout=self.config.timeout,
                     write_timeout=self.config.write_timeout,
                 )
+                log.info("Poort %s geopend op %s baud", self.config.port, self.config.baudrate)
                 # Some STM32 boards reset when serial opens.
                 time.sleep(self.config.startup_delay)
                 self.clear_buffers()
             except SerialException as exc:
+                log.error("Poort %s kon niet geopend worden: %s", self.config.port, exc)
                 raise ConnectionError(f"Could not open serial port {self.config.port}: {exc}") from exc
      
     def disconnect(self) -> None:
@@ -52,6 +59,7 @@ class RelayController:
             if self._serial is not None:
                 self._serial.close()
                 self._serial = None
+                log.info("Poort %s gesloten", self.config.port)
 
     @property
     def is_connected(self) -> bool:
@@ -83,9 +91,16 @@ class RelayController:
         # The firmware expects every command to end with a carriage return
         # and newline.
         full_command = f"{clean_command}\r\n"
+        log.info("TX  %s", clean_command)
+        started = time.time()
         self._serial.write(full_command.encode("utf-8"))
         self._serial.flush()
-        return self._read_response()
+        response = self._read_response()
+        # One line per reply, so a multi-line answer stays on one log line.
+        log.info("RX  %s   (%.0f ms)",
+                 response.replace("\n", " | ") if response else "<geen antwoord>",
+                 (time.time() - started) * 1000)
+        return response
     
     def _read_response(self) -> str:
         """
@@ -109,6 +124,9 @@ class RelayController:
             else:
                 time.sleep(0.01)
         text = received.decode("utf-8", errors="replace")
+        # The raw bytes are only interesting when a reply looks wrong, so
+        # they sit at debug level.
+        log.debug("RX raw %r", bytes(received))
         return self._clean_response(text)
     
     @staticmethod

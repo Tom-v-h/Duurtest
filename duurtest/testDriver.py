@@ -26,6 +26,7 @@ involving the GUI:
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 import time
@@ -34,6 +35,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .relay import RelayController, RelayControllerConfig
+
+log = logging.getLogger(__name__)                    # the test itself
+dispenser_log = logging.getLogger("duurtest.dispenser")   # traffic to the dispenser
 
 # Unit name -> number, as the dispenser knows them. The names match the
 # object names of the checkboxes in Duurtest_GUI.ui.
@@ -152,6 +156,44 @@ class _TimeoutTransport(xmlrpc.client.Transport):
         return connection
 
 
+class _LoggedServer:
+    """
+    Wraps the xmlrpc proxy so every call to the dispenser is logged: the
+    method with its arguments, how long it took, and what came back or which
+    fault it raised.
+
+    Wrapping rather than logging at each call site means a call added later
+    is logged too, and the loop stays readable.
+    """
+
+    def __init__(self, server):
+        self._server = server
+
+    def __getattr__(self, name: str):
+        method = getattr(self._server, name)
+
+        def call(*args):
+            arguments = ", ".join(repr(a) for a in args)
+            dispenser_log.info("TX  %s(%s)", name, arguments)
+            started = time.time()
+            try:
+                result = method(*args)
+            except xmlrpc.client.Fault as fault:
+                dispenser_log.error("RX  %s FOUT na %.0f ms: %s",
+                                    name, (time.time() - started) * 1000, fault.faultString)
+                raise
+            except Exception as exc:                 # noqa: BLE001 - log, then pass on
+                dispenser_log.error("RX  %s mislukt na %.0f ms: %s",
+                                    name, (time.time() - started) * 1000, exc)
+                raise
+            dispenser_log.info("RX  %s -> %s   (%.0f ms)",
+                               name, "ok" if result is None else repr(result),
+                               (time.time() - started) * 1000)
+            return result
+
+        return call
+
+
 class _Stopped(Exception):
     """
     Raised internally when stop() has been called.
@@ -203,7 +245,22 @@ class DuurTest:
         """
         error = self.settings.validate()
         if error:
+            log.error("Test niet gestart: %s", error)
             raise ValueError(error)
+
+        s = self.settings
+        log.info("=" * 70)
+        log.info("Test gestart: %d dispenses over %d units", s.dispense_number, len(s.units))
+        log.info("  relay      : %s @ %s baud", s.port, s.baudrate)
+        log.info("  dispenser  : %s @ %s baud, adres %s, %s",
+                 DISPENSER_PORT, DISPENSER_BAUDRATE, DISPENSER_ADDRESS, DISPENSER_URL)
+        log.info("  units      : %s", ", ".join(s.units))
+        log.info("  hoeveelheid: %s",
+                 f"{s.dispense_min}-{s.dispense_max} ml random" if s.random_dispense
+                 else f"{s.dispense_amount} ml vast")
+        log.info("  powercycle : %s",
+                 f"elke {s.power_cycle_interval} dispenses" if s.power_cycle_interval else "uit")
+
         self.running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -226,10 +283,12 @@ class DuurTest:
         relay.py. Closing the port is still left to the test thread, which
         owns it.
         """
+        log.info("Stop ingedrukt")
         self._stop = True
         if not self._power_off_now():
             # The test thread is holding the relay; its own shutdown will
             # switch off in a moment.
+            log.warning("Relay was bezig, uitschakelen wordt door de testthread gedaan")
             self.message = "Stoppen, relay is bezig..."
 
     def wait(self, timeout: Optional[float] = None) -> None:
@@ -253,11 +312,16 @@ class DuurTest:
             # finished, but says something about the connection.
             self.message = ("Test afgerond" if not self.resyncs else
                             f"Test afgerond, {self.resyncs}x opnieuw verbonden met de dispenser")
+            log.info("Test afgerond, %d resync(s)", self.resyncs)
         except _Stopped:
             self.message = "Test gestopt"
+            log.info("Test gestopt door de gebruiker bij %d%%", self.percentage)
         except Exception as exc:                 # noqa: BLE001 - report to the GUI
             self.error = str(exc)
             self.message = f"Fout: {exc}"
+            # exc_info puts the traceback in the file, which says a lot more
+            # than the one line the GUI shows.
+            log.exception("Test afgebroken door een fout: %s", exc)
         finally:
             # Set last, so the GUI sees the final status in the same poll in
             # which it notices the test has ended.
@@ -284,10 +348,10 @@ class DuurTest:
         # ServerProxy does not talk to the network yet; the first call does.
         # The transport carries a timeout so a dispenser that stops answering
         # cannot block this thread indefinitely.
-        server = xmlrpc.client.ServerProxy(
+        server = _LoggedServer(xmlrpc.client.ServerProxy(
             DISPENSER_URL, allow_none=True,
             transport=_TimeoutTransport(DISPENSER_TIMEOUT),
-        )
+        ))
 
         try:
             self._power_on(self.relay, server)
@@ -298,6 +362,7 @@ class DuurTest:
                 unit = random.choice(settings.units)
                 amount = settings.next_amount()
                 self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
+                log.info("--- Dispense %d/%d: %s, %d ml ---", done, total, unit, amount)
 
                 self._prepare_dispense(server, unit, amount)
                 garbled = self._start_dispense(server)
@@ -321,6 +386,7 @@ class DuurTest:
                 # the finally block switches the power off anyway.
                 if interval and done % interval == 0 and done < total:
                     self.message = f"Power cycle na {done} dispenses"
+                    log.info("Power cycle na %d dispenses", done)
                     self._power_off_now()
                     self._sleep(POWER_OFF_DELAY)
                     self._power_on(self.relay, server)
@@ -363,6 +429,8 @@ class DuurTest:
                 self.resyncs += 1
                 self.message = (f"Dispenser antwoordde onleesbaar, poging "
                                 f"{attempt} van {DISPENSER_RETRIES}: {fault.faultString}")
+                log.warning("Onleesbaar antwoord (poging %d/%d), opnieuw verbinden: %s",
+                            attempt, DISPENSER_RETRIES, fault.faultString)
                 self._resync(server)
 
     def _start_dispense(self, server) -> bool:
@@ -381,6 +449,8 @@ class DuurTest:
             self.resyncs += 1
             self.message = (f"Antwoord op de dispense was onleesbaar ({fault.faultString}); "
                             f"niet herhaald, de unit kan al bezig zijn")
+            log.warning("Antwoord op dispenseAllPreparedUnits onleesbaar, NIET herhaald: %s",
+                        fault.faultString)
             return True
 
     def _resync(self, server) -> None:
@@ -488,6 +558,9 @@ class DuurTest:
 if __name__ == "__main__":
     # Run without the GUI: python -m duurtest.testDriver
     # These settings stand in for what is normally filled in in the window.
+    from .logsetup import setup_logging
+
+    setup_logging()
     test = DuurTest(TestSettings(
         port="COM11",
         baudrate=115200,
