@@ -50,7 +50,7 @@ UNITS: dict[str, int] = {
     'CX01': 0x0A01, 'MH01': 0x0A02, 'YH04': 0x0A03, 'RH01': 0x0A04,
     'YX01': 0x0A05, 'WX01': 0x0A06, 'CH01': 0x0A07, 'GH01': 0x0A08,
     'BH01': 0x0A09, 'OH01': 0x0A10, 'RX01': 0x0A11, 'YH01': 0x0A12,
-    'GX01': 0x0A13, 'BX01': 0x0A14, 'YH02': 0x0A15, 'DISP16': 0x0A16,
+    'GX01': 0x0A13, 'BX01': 0x0A14, 'YH02': 0x0A15, 'WX02': 0x0A16,
 }
 
 # Connection to the machine's control board. The driver talks to it directly
@@ -401,7 +401,7 @@ class DuurTest:
                 self.message = f"Dispense {done}/{total}: {namen}, {amount} ml"
                 log.info("--- Dispense %d/%d: %s, %d ml per unit ---",
                          done, total, namen, amount)
-
+		
                 self._prepare_dispense(units, amount)
                 garbled = self._start_dispense()
                 if garbled:
@@ -504,10 +504,19 @@ class DuurTest:
         """
         for attempt in range(1, DISPENSER_RETRIES + 1):
             try:
-                for unit in units:
+                for unit in units: 
+                    self._check_result(
+                        self.machine.dispense_cancel(),
+                        f"dispense_cancel()")
+                    self._check_result(
+                        self.machine.get_fill_level(unit),
+                        f"get_fill_level({unit})")
                     self._check_result(
                         self.machine.correct_fill_level(unit, UNITS[unit], FILL_LEVEL),
                         f"correct_fill_level({unit})")
+                    self._check_result(
+                        self.machine.get_fill_level(unit),
+                        f"get_fill_level({unit})")
                     self._check_result(
                         self.machine.dispense_nl(unit, amount_ml * NL_PER_ML),
                         f"dispense_nl({unit}, {amount_ml} ml)")

@@ -140,7 +140,7 @@ color: rgb(255,255,255);</string>
         <string>YH04</string>
        </property>
       </widget>
-      <widget class="QCheckBox" name="DISP16_checkBox">
+      <widget class="QCheckBox" name="WX02_checkBox">
        <property name="geometry">
         <rect>
          <x>20</x>
@@ -150,7 +150,7 @@ color: rgb(255,255,255);</string>
         </rect>
        </property>
        <property name="text">
-        <string>DISP16</string>
+        <string>WX02</string>
        </property>
       </widget>
       <widget class="QCheckBox" name="WX01_checkBox">
@@ -581,7 +581,7 @@ color: rgb(255,255,255);</string>
         </rect>
        </property>
        <property name="styleSheet">
-        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+        <string notr="true">font: 10pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
         <string>Dispense amount in ml</string>
@@ -600,7 +600,7 @@ color: rgb(255,255,255);</string>
        </rect>
        </property>
        <property name="styleSheet">
-        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+        <string notr="true">font: 10pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
         <string>Min</string>
@@ -619,7 +619,7 @@ color: rgb(255,255,255);</string>
        </rect>
        </property>
        <property name="styleSheet">
-        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+        <string notr="true">font: 10pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
         <string>Max</string>
@@ -635,7 +635,7 @@ color: rgb(255,255,255);</string>
         </rect>
        </property>
        <property name="styleSheet">
-        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+        <string notr="true">font: 14pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
         <string>Max units per dispense</string>
