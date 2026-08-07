@@ -156,6 +156,9 @@ class DuurtestGUI(QtCore.QObject):
             # driver rejects an empty port.
             port=self.ui.Com_comboBox.currentData() or "",
             baudrate=self.ui.baud_comboBox.currentData(),
+            # Second port: the machine's control board. Its baudrate is fixed
+            # by the protocol, so it is a constant in testDriver.py.
+            machine_port=self.ui.Machine_comboBox.currentData() or "",
             # The unit name comes from the object name (CX01_checkBox ->
             # CX01) rather than the label, because the object names are the
             # ones guaranteed to match testDriver.UNITS.
@@ -174,38 +177,40 @@ class DuurtestGUI(QtCore.QObject):
     # ------------------------------------------------------------------
     def refresh_ports(self) -> None:
         """
-        Fill the COM port dropdown with the ports currently connected.
+        Fill both COM port dropdowns with the ports currently connected: one
+        for the relay, one for the machine's control board.
 
         Called once at start-up and then on a timer, so an adapter plugged
         in later appears without restarting the application.
         """
-        combo = self.ui.Com_comboBox
+        combos = (self.ui.Com_comboBox, self.ui.Machine_comboBox)
         ports = sorted(list_ports.comports(), key=lambda p: p.device)
         devices = [p.device for p in ports]
 
-        # Rebuilding the list closes an open popup and briefly clears the
+        # Rebuilding a list closes an open popup and briefly clears the
         # selection, so only do it when something actually changed and the
-        # user is not looking at the list right now.
-        if devices == self._ports or combo.view().isVisible():
+        # user is not looking at either list right now.
+        if devices == self._ports or any(c.view().isVisible() for c in combos):
             return
         self._ports = devices
 
-        # Remember the selected port so it survives the rebuild.
-        current = combo.currentData()
-        combo.clear()
-        for port in ports:
-            # Shows e.g. "COM11 - STMicroelectronics Virtual COM Port", but
-            # stores only "COM11" as the item data. rstrip() drops the dash
-            # again for ports without a description.
-            combo.addItem(f"{port.device} - {port.description}".rstrip(" -"), port.device)
-        if not ports:
-            # Keep the dropdown non-empty so it does not look broken. The
-            # data is None, which fails validation when Start is pressed.
-            combo.addItem("Geen poort gevonden", None)
+        for combo in combos:
+            # Remember the selected port so it survives the rebuild.
+            current = combo.currentData()
+            combo.clear()
+            for port in ports:
+                # Shows e.g. "COM11 - STMicroelectronics Virtual COM Port",
+                # but stores only "COM11" as the item data. rstrip() drops the
+                # dash again for ports without a description.
+                combo.addItem(f"{port.device} - {port.description}".rstrip(" -"), port.device)
+            if not ports:
+                # Keep the dropdown non-empty so it does not look broken. The
+                # data is None, which fails validation when Start is pressed.
+                combo.addItem("Geen poort gevonden", None)
 
-        # findData() returns -1 when the previously selected port is gone;
-        # fall back to the first entry in that case.
-        combo.setCurrentIndex(max(0, combo.findData(current)))
+            # findData() returns -1 when the previously selected port is gone;
+            # fall back to the first entry in that case.
+            combo.setCurrentIndex(max(0, combo.findData(current)))
 
     def select_all(self, checked: bool) -> None:
         """Tick or untick every unit; each one triggers update_select_all."""
@@ -321,7 +326,9 @@ class DuurtestGUI(QtCore.QObject):
         if test.error:
             QtWidgets.QMessageBox.critical(self.ui, "Duurtest", test.error)
         elif test.completed:
-            QtWidgets.QMessageBox.information(self.ui, "Duurtest", "Test afgerond.")
+            # The driver's own message carries the tally of warnings and
+            # errors the machine reported along the way.
+            QtWidgets.QMessageBox.information(self.ui, "Duurtest", test.message)
 
     def shutdown(self) -> None:
         """

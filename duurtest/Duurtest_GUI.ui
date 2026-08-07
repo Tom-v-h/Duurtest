@@ -314,7 +314,7 @@ color: rgb(255,255,255);</string>
       <property name="geometry">
        <rect>
         <x>30</x>
-        <y>410</y>
+        <y>408</y>
         <width>481</width>
         <height>91</height>
        </rect>
@@ -336,9 +336,9 @@ color: rgb(255,255,255);</string>
       <property name="geometry">
        <rect>
         <x>30</x>
-        <y>20</y>
+        <y>15</y>
         <width>231</width>
-        <height>161</height>
+        <height>211</height>
        </rect>
       </property>
       <property name="styleSheet">
@@ -391,7 +391,7 @@ color: rgb(255,255,255);</string>
         <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
-        <string>Com-port</string>
+        <string>Com-port relay</string>
        </property>
       </widget>
       <widget class="QLabel" name="label_8">
@@ -416,17 +416,43 @@ color: rgb(255,255,255);</string>
         <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
        </property>
        <property name="text">
-        <string>Baudrate</string>
+        <string>Baudrate relay</string>
        </property>
       </widget>
-     </widget>
+           <widget class="QLabel" name="label_9">
+       <property name="geometry">
+        <rect>
+         <x>20</x>
+         <y>150</y>
+         <width>201</width>
+         <height>21</height>
+        </rect>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+       </property>
+       <property name="text">
+        <string>Com-port machine</string>
+       </property>
+      </widget>
+      <widget class="QComboBox" name="Machine_comboBox">
+       <property name="geometry">
+        <rect>
+         <x>20</x>
+         <y>180</y>
+         <width>191</width>
+         <height>22</height>
+        </rect>
+       </property>
+      </widget>
+</widget>
      <widget class="QGroupBox" name="PowerCycleSelect">
       <property name="geometry">
        <rect>
         <x>30</x>
-        <y>300</y>
+        <y>322</y>
         <width>231</width>
-        <height>81</height>
+        <height>76</height>
        </rect>
       </property>
       <property name="styleSheet">
@@ -604,9 +630,9 @@ color: rgb(255,255,255);</string>
       <property name="geometry">
        <rect>
         <x>30</x>
-        <y>200</y>
+        <y>236</y>
         <width>231</width>
-        <height>81</height>
+        <height>76</height>
        </rect>
       </property>
       <property name="styleSheet">
