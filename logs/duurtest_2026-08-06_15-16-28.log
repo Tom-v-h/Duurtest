@@ -1,0 +1,21 @@
+2026-08-06 15:16:28.920  duurtest.testDriver  INFO    ======================================================================
+2026-08-06 15:16:28.923  duurtest.testDriver  INFO    Test gestart: 5 dispenses over 16 units
+2026-08-06 15:16:28.925  duurtest.testDriver  INFO      relay      : COM3 @ 115200 baud
+2026-08-06 15:16:28.928  duurtest.testDriver  INFO      dispenser  : COM6 @ 19200 baud, adres 0x0002, http://localhost:9111/
+2026-08-06 15:16:28.930  duurtest.testDriver  INFO      units      : CX01, MH01, RH01, YH04, DISP16, WX01, CH01, YX01, YH01, GX01, YH02, RX01, BH01, OH01, BX01, GH01
+2026-08-06 15:16:28.933  duurtest.testDriver  INFO      hoeveelheid: 10 ml vast
+2026-08-06 15:16:28.938  duurtest.testDriver  INFO      powercycle : uit
+2026-08-06 15:16:28.979  duurtest.relay       INFO    Poort COM3 geopend op 115200 baud
+2026-08-06 15:16:30.985  duurtest.relay       INFO    TX  ON
+2026-08-06 15:16:31.995  duurtest.relay       INFO    RX  <geen antwoord>   (1004 ms)
+2026-08-06 15:16:35.999  duurtest.testDriver  INFO    Stop ingedrukt
+2026-08-06 15:16:36.003  duurtest.relay       INFO    TX  OFF
+2026-08-06 15:16:37.013  duurtest.relay       INFO    RX  <geen antwoord>   (1007 ms)
+2026-08-06 15:16:37.326  duurtest.testDriver  INFO    Stop ingedrukt
+2026-08-06 15:16:37.330  duurtest.relay       INFO    TX  OFF
+2026-08-06 15:16:38.341  duurtest.relay       INFO    RX  <geen antwoord>   (1007 ms)
+2026-08-06 15:16:41.012  duurtest.relay       INFO    TX  OFF
+2026-08-06 15:16:42.022  duurtest.relay       INFO    RX  <geen antwoord>   (1006 ms)
+2026-08-06 15:16:42.057  duurtest.relay       INFO    Poort COM3 gesloten
+2026-08-06 15:16:42.064  duurtest.testDriver  INFO    Test gestopt door de gebruiker bij 0%
+2026-08-06 15:16:42.075  duurtest.testDriver  INFO    Log van deze run: \\NLDC01VS509\HOME$\VIM\TomvanHeeswijk\VDL projecten\Engineering\Duurtest\Duurtest_SW\Duurtest\logs\duurtest_2026-08-06_15-16-28.log
