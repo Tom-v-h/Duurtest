@@ -78,14 +78,6 @@ POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 STATUS_IDLE = "IDLE"
 STATUS_POLL_INTERVAL = 0.5   # how often the machine is asked for its status
 
-# The machine does not report DISPENSING the instant the command is sent, so
-# an IDLE answer right after starting means "not started yet" rather than
-# "finished". Only after this long without ever seeing it busy is a dispense
-# taken to be done. Waiting costs nothing when the machine does report
-# DISPENSING in time, so this is generous on purpose; if the log keeps saying a
-# dispense was never seen running, raise it.
-DISPENSE_START_GRACE = 1.0
-
 # A machine that never returns to IDLE would keep the test waiting forever.
 DISPENSE_TIMEOUT = 600.0
 
@@ -546,11 +538,14 @@ class DuurTest:
         unit is only used to say in the log which dispense was being waited
         on.
 
-        Two things make this more than a single check. The machine needs a
-        moment to start, so an IDLE answer straight after the command means it
-        has not begun yet: only once DISPENSE_START_GRACE has passed without
-        ever seeing it busy is the dispense taken to be finished. And a
-        garbled reply is not fatal here, since asking for a status changes
+        The first IDLE ends the wait. There is no grace period for the
+        machine to get going: dispense_all() only returns after it has spent
+        two seconds collecting the machine's log messages, so by the time the
+        first status is asked the machine has long since started. Whether it
+        was ever seen busy is still worth a word in the log, since a dispense
+        that was already over says something about how short it was.
+
+        A garbled reply is not fatal here, since asking for a status changes
         nothing: the connection is resynced and the next poll tries again.
         """
         started = time.monotonic()
@@ -572,18 +567,9 @@ class DuurTest:
                 status = "?"
             else:
                 if status == STATUS_IDLE:
-                    if seen_busy:
-                        log.info("%s is klaar na %.1f s", unit, time.monotonic() - started)
-                        return
-                    if time.monotonic() - started >= DISPENSE_START_GRACE:
-                        # Never seen busy. Either the dispense was over before
-                        # the first poll, or the machine takes longer than the
-                        # grace period to report it. Worth saying out loud:
-                        # in the second case the test moves on too early.
-                        log.warning("Machine meldde nooit DISPENSING binnen %.1f s; "
-                                    "dispense van %s als klaar beschouwd",
-                                    DISPENSE_START_GRACE, unit)
-                        return
+                    log.info("%s is klaar na %.1f s%s", unit, time.monotonic() - started,
+                             "" if seen_busy else " (was al klaar bij de eerste controle)")
+                    return
                 elif not seen_busy:
                     seen_busy = True
                     log.info("%s is begonnen (machinestatus %s)", unit, status)
