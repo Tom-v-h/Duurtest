@@ -68,7 +68,7 @@ DISPENSE_CALL_TIMEOUT = 120.0  # longer window for dispense_all, which may only
 # dispense_nl() works in nanolitres while the window asks for millilitres.
 NL_PER_ML = 1_000_000
 
-FILL_LEVEL = 3800          # value passed to correct_fill_level
+FILL_LEVEL = 3800000000          # value passed to correct_fill_level
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
@@ -84,7 +84,7 @@ STATUS_POLL_INTERVAL = 0.5   # how often the machine is asked for its status
 # taken to be done. Waiting costs nothing when the machine does report
 # DISPENSING in time, so this is generous on purpose; if the log keeps saying a
 # dispense was never seen running, raise it.
-DISPENSE_START_GRACE = 5.0
+DISPENSE_START_GRACE = 1.0
 
 # A machine that never returns to IDLE would keep the test waiting forever.
 DISPENSE_TIMEOUT = 600.0
