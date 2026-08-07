@@ -49,8 +49,8 @@ machine_log = logging.getLogger("duurtest.machine")     # traffic to the control
 UNITS: dict[str, int] = {
     'CX01': 0x0A01, 'MH01': 0x0A02, 'YH04': 0x0A03, 'RH01': 0x0A04,
     'YX01': 0x0A05, 'WX01': 0x0A06, 'CH01': 0x0A07, 'GH01': 0x0A08,
-    'BH01': 0x0A09, 'OH01': 0x0A010, 'RX01': 0x0A011, 'YH01': 0x0A012,
-    'GX01': 0x0A013, 'BX01': 0x0A014, 'YH02': 0x0A015, 'DISP16': 0x0A016,
+    'BH01': 0x0A09, 'OH01': 0x0A10, 'RX01': 0x0A11, 'YH01': 0x0A12,
+    'GX01': 0x0A13, 'BX01': 0x0A14, 'YH02': 0x0A15, 'DISP16': 0x0A16,
 }
 
 # Connection to the machine's control board. The driver talks to it directly
