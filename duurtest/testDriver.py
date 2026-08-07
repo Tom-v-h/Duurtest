@@ -47,10 +47,10 @@ machine_log = logging.getLogger("duurtest.machine")     # traffic to the control
 # Unit name -> number, as the machine knows them. The names match the
 # object names of the checkboxes in Duurtest_GUI.ui.
 UNITS: dict[str, int] = {
-    'CX01': 1, 'MH01': 2, 'YH04': 3, 'RH01': 4,
-    'YX01': 5, 'WX01': 6, 'CH01': 7, 'GH01': 8,
-    'BH01': 9, 'OH01': 10, 'RX01': 11, 'YH01': 12,
-    'GX01': 13, 'BX01': 14, 'YH02': 15, 'DISP16': 16,
+    'CX01': 0x0A01, 'MH01': 0x0A02, 'YH04': 0x0A03, 'RH01': 0x0A04,
+    'YX01': 0x0A05, 'WX01': 0x0A06, 'CH01': 0x0A07, 'GH01': 0x0A08,
+    'BH01': 0x0A09, 'OH01': 0x0A010, 'RX01': 0x0A011, 'YH01': 0x0A012,
+    'GX01': 0x0A013, 'BX01': 0x0A014, 'YH02': 0x0A015, 'DISP16': 0x0A016,
 }
 
 # Connection to the machine's control board. The driver talks to it directly
