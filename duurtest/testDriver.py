@@ -518,12 +518,17 @@ class DuurTest:
         Since part of it may already be queued, and a unit queued twice would
         dispense twice, the queue is cleared first.
         """
+        self._check_result(
+            self.machine.dispense_cancel(),
+            f"dispense_cancel()")
+
         for attempt in range(1, DISPENSER_RETRIES + 1):
             try:
                 for unit, amount_ml in portions:
+                    
                     self._check_result(
-                        self.machine.dispense_cancel(),
-                        f"dispense_cancel()")
+                        self.machine.get_solenoid_temperature(UNITS[unit]),
+                        f"get_solenoid_temperature({unit})")
                     self._check_result(
                         self.machine.get_fill_level(unit),
                         f"get_fill_level({unit})")

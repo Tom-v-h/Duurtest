@@ -332,6 +332,12 @@ CORRECT_ALL_FILL_LEVELS_RES = vimbus.CommandDefinition('CorrectAllFillLevels', 0
     ('error_alias_or_color_name', vimbus.VariableType.STRING),
     ('result_code', vimbus.VariableType.U16, RESULT_CODE)])
 
+GET_SOL_TEMP_CODE = 0x0BA5
+GET_SOL_TEMP_REQ = vimbus.CommandDefinition('GetSolenoidTemperature', GET_SOL_TEMP_CODE, [
+    ('address', vimbus.VariableType.U16)])
+GET_SOL_TEMP_RES = vimbus.CommandDefinition('GetSolenoidTemperature', GET_SOL_TEMP_CODE, [
+    ('temperature', vimbus.VariableType.U16, vimbus.FormatHint.DECIMAL)])
+
 GET_DISPENSER_UNIT_CALIBRATION_VERSION_REQ = vimbus.CommandDefinition('GetDispenserUnitCalibrationVersion', 0x0B08, [
     ('dispenser_unit_address', vimbus.VariableType.U16)])
 GET_DISPENSER_UNIT_CALIBRATION_VERSION_RES = vimbus.CommandDefinition('GetDispenserUnitCalibrationVersion', 0x0B08, [
@@ -656,6 +662,24 @@ class ControlBoard(vimbus.Master):
 
     def get_all_fill_levels(self) -> vimbus.Command:
         return self._request(GET_ALL_FILL_LEVELS_REQ, GET_ALL_FILL_LEVELS_RES, [])
+
+    def get_solenoid_temperature(self, address: int) -> float:
+        """
+        Returns the temperature of the solenoid of the given unit
+        :param address: Address of the unit to get solenoid temperature for
+        :return: Solenoid temperature
+        """
+
+        res = self._request(
+            req=GET_SOL_TEMP_REQ,
+            res=GET_SOL_TEMP_RES,
+            vars=[address])
+
+        if res.vars['temperature'] == 0:
+            raise Exception(f'Dispenser unit returned invalid temperature')
+
+        return res.vars['temperature'] / 100
+ 
 
     def correct_fill_level(self, color_or_alias_name: str, dispenser_address: int, fill_level: int) -> vimbus.Command:
         return self._request(CORRECT_FILL_LEVEL_REQ, CORRECT_FILL_LEVEL_RES,
