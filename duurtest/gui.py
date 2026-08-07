@@ -52,6 +52,11 @@ PAGE_PROGRESS = 1
 PORT_INTERVAL = 2000       # how often the COM port list is re-read
 STATUS_INTERVAL = 500      # how often the running test is polled
 
+# The window's stylesheet paints a dark blue background, which the status bar
+# and the dialogs inherit while their text stays the default black. Both are
+# given this colour instead.
+TEXT_COLOUR = "rgb(255, 255, 255)"
+
 
 class DuurtestGUI(QtCore.QObject):
     """
@@ -113,7 +118,10 @@ class DuurtestGUI(QtCore.QObject):
         # the first status poll, otherwise the central widget would shrink
         # by the height of the bar at the moment the test starts and the
         # page would visibly jump.
-        self.ui.statusBar()
+        #
+        # White text, because the window's stylesheet paints everything on a
+        # dark blue background and the default black is unreadable on it.
+        self.ui.statusBar().setStyleSheet(f"color: {TEXT_COLOUR};")
 
         # Start on the settings page with an empty progress bar.
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
@@ -141,6 +149,18 @@ class DuurtestGUI(QtCore.QObject):
         """Show the window; called from main()."""
         self.ui.show()
 
+    def _dialog(self, icon: QtWidgets.QMessageBox.Icon, text: str) -> None:
+        """
+        Show a message box with readable text.
+
+        The static QMessageBox helpers would inherit the window's dark
+        stylesheet and leave the text in the default black, which is barely
+        visible on it, so the box is built here and given white text.
+        """
+        box = QtWidgets.QMessageBox(icon, "Duurtest", text, parent=self.ui)
+        box.setStyleSheet(f"QMessageBox, QLabel, QPushButton {{ color: {TEXT_COLOUR}; }}")
+        box.exec()
+
     # ------------------------------------------------------------------
     # Reading the state of the .ui
     # ------------------------------------------------------------------
@@ -156,6 +176,9 @@ class DuurtestGUI(QtCore.QObject):
             # driver rejects an empty port.
             port=self.ui.Com_comboBox.currentData() or "",
             baudrate=self.ui.baud_comboBox.currentData(),
+            # Second port: the machine's control board. Its baudrate is fixed
+            # by the protocol, so it is a constant in testDriver.py.
+            machine_port=self.ui.Machine_comboBox.currentData() or "",
             # The unit name comes from the object name (CX01_checkBox ->
             # CX01) rather than the label, because the object names are the
             # ones guaranteed to match testDriver.UNITS.
@@ -167,6 +190,7 @@ class DuurtestGUI(QtCore.QObject):
             dispense_amount=self.ui.DispenseAmount_spinBox.value(),
             dispense_min=self.ui.MinDispense_spinBox.value(),
             dispense_max=self.ui.MaxDispense_spinBox.value(),
+            max_units=self.ui.UnitCount_spinBox.value(),
         )
 
     # ------------------------------------------------------------------
@@ -174,38 +198,40 @@ class DuurtestGUI(QtCore.QObject):
     # ------------------------------------------------------------------
     def refresh_ports(self) -> None:
         """
-        Fill the COM port dropdown with the ports currently connected.
+        Fill both COM port dropdowns with the ports currently connected: one
+        for the relay, one for the machine's control board.
 
         Called once at start-up and then on a timer, so an adapter plugged
         in later appears without restarting the application.
         """
-        combo = self.ui.Com_comboBox
+        combos = (self.ui.Com_comboBox, self.ui.Machine_comboBox)
         ports = sorted(list_ports.comports(), key=lambda p: p.device)
         devices = [p.device for p in ports]
 
-        # Rebuilding the list closes an open popup and briefly clears the
+        # Rebuilding a list closes an open popup and briefly clears the
         # selection, so only do it when something actually changed and the
-        # user is not looking at the list right now.
-        if devices == self._ports or combo.view().isVisible():
+        # user is not looking at either list right now.
+        if devices == self._ports or any(c.view().isVisible() for c in combos):
             return
         self._ports = devices
 
-        # Remember the selected port so it survives the rebuild.
-        current = combo.currentData()
-        combo.clear()
-        for port in ports:
-            # Shows e.g. "COM11 - STMicroelectronics Virtual COM Port", but
-            # stores only "COM11" as the item data. rstrip() drops the dash
-            # again for ports without a description.
-            combo.addItem(f"{port.device} - {port.description}".rstrip(" -"), port.device)
-        if not ports:
-            # Keep the dropdown non-empty so it does not look broken. The
-            # data is None, which fails validation when Start is pressed.
-            combo.addItem("Geen poort gevonden", None)
+        for combo in combos:
+            # Remember the selected port so it survives the rebuild.
+            current = combo.currentData()
+            combo.clear()
+            for port in ports:
+                # Shows e.g. "COM11 - STMicroelectronics Virtual COM Port",
+                # but stores only "COM11" as the item data. rstrip() drops the
+                # dash again for ports without a description.
+                combo.addItem(f"{port.device} - {port.description}".rstrip(" -"), port.device)
+            if not ports:
+                # Keep the dropdown non-empty so it does not look broken. The
+                # data is None, which fails validation when Start is pressed.
+                combo.addItem("Geen poort gevonden", None)
 
-        # findData() returns -1 when the previously selected port is gone;
-        # fall back to the first entry in that case.
-        combo.setCurrentIndex(max(0, combo.findData(current)))
+            # findData() returns -1 when the previously selected port is gone;
+            # fall back to the first entry in that case.
+            combo.setCurrentIndex(max(0, combo.findData(current)))
 
     def select_all(self, checked: bool) -> None:
         """Tick or untick every unit; each one triggers update_select_all."""
@@ -254,13 +280,19 @@ class DuurtestGUI(QtCore.QObject):
     # ------------------------------------------------------------------
     def start_test(self) -> None:
         """Hand the settings to the driver and switch to the progress page."""
+        # The Start button sits on the settings page, so it cannot normally be
+        # pressed while a test runs. Guard anyway: two tests at once would
+        # fight over the relay and mix their log files.
+        if self.test is not None and self.test.running:
+            return
+
         settings = self.read_settings()
 
         # The driver decides what counts as valid; this layer only reports
         # the message, so the same rules apply when it runs without a GUI.
         error = settings.validate()
         if error:
-            QtWidgets.QMessageBox.warning(self.ui, "Instellingen", error)
+            self._dialog(QtWidgets.QMessageBox.Icon.Warning, error)
             return
 
         # start() returns immediately: the test runs in its own thread, so
@@ -313,9 +345,11 @@ class DuurtestGUI(QtCore.QObject):
         # Report the outcome. A test that was stopped by the operator gets no
         # dialog: they already know, they pressed the button.
         if test.error:
-            QtWidgets.QMessageBox.critical(self.ui, "Duurtest", test.error)
+            self._dialog(QtWidgets.QMessageBox.Icon.Critical, test.error)
         elif test.completed:
-            QtWidgets.QMessageBox.information(self.ui, "Duurtest", "Test afgerond.")
+            # The driver's own message carries the tally of warnings and
+            # errors the machine reported along the way.
+            self._dialog(QtWidgets.QMessageBox.Icon.Information, test.message)
 
     def shutdown(self) -> None:
         """
@@ -339,6 +373,7 @@ def main() -> int:
     Returns the exit code; called from main.py in the directory above.
     """
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
     window = DuurtestGUI()
     app.aboutToQuit.connect(window.shutdown)
     window.show()

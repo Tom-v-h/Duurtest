@@ -11,6 +11,3 @@ env/
 # Editors
 .vscode/
 .idea/
-
-# Logbestanden van testruns
-logs/

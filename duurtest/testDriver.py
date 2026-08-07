@@ -12,14 +12,15 @@ purpose: this module is plain Python and can be used on its own.
 
 One test run consists of:
 
-    relay on -> wait -> connect dispenser
+    relay on -> wait -> open the serial port to the machine
     for every dispense:
-        pick a unit and an amount, dispense it, wait
+        pick a unit and an amount, dispense it
+        wait until the machine reports IDLE again
         after every power_cycle_interval dispenses: relay off, on, reconnect
     relay off -> disconnect
 
 The block at the bottom only runs when this module is started directly,
-which is handy to check whether the relay and the dispenser respond without
+which is handy to check whether the relay and the machine respond without
 involving the GUI:
     python -m duurtest.testDriver
 """
@@ -30,42 +31,61 @@ import logging
 import random
 import threading
 import time
-import xmlrpc.client
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import serial
+
+from .control_board import ControlBoard, ResultCode
 from .logsetup import start_run_log, stop_run_log
 from .relay import RelayController, RelayControllerConfig
 
-log = logging.getLogger(__name__)                    # the test itself
-dispenser_log = logging.getLogger("duurtest.dispenser")   # traffic to the dispenser
+log = logging.getLogger(__name__)                       # the test itself
+machine_log = logging.getLogger("duurtest.machine")     # traffic to the control board
 
-# Unit name -> number, as the dispenser knows them. The names match the
+# Unit name -> number, as the machine knows them. The names match the
 # object names of the checkboxes in Duurtest_GUI.ui.
 UNITS: dict[str, int] = {
-    'CX01': 1, 'MH01': 2, 'YH04': 3, 'RH01': 4,
-    'YX01': 5, 'WX01': 6, 'CH01': 7, 'GH01': 8,
-    'BH01': 9, 'OH01': 10, 'RX01': 11, 'YH01': 12,
-    'GX01': 13, 'BX01': 14, 'YH02': 15, 'DISP16': 16,
+    'CX01': 0x0A01, 'MH01': 0x0A02, 'YH04': 0x0A03, 'RH01': 0x0A04,
+    'YX01': 0x0A05, 'WX01': 0x0A06, 'CH01': 0x0A07, 'GH01': 0x0A08,
+    'BH01': 0x0A09, 'OH01': 0x0A10, 'RX01': 0x0A11, 'YH01': 0x0A12,
+    'GX01': 0x0A13, 'BX01': 0x0A14, 'YH02': 0x0A15, 'WX02': 0x0A16,
 }
 
-# Connection to the dispenser. This is a separate xmlrpc service on its own
-# serial port, unrelated to the relay port picked in the GUI.
-DISPENSER_URL = "http://localhost:9111/"
-DISPENSER_PORT = "COM6"
-DISPENSER_ADDRESS = "0x0002"
-DISPENSER_BAUDRATE = 19200
+# Connection to the machine's control board. The driver talks to it directly
+# over serial, using the VIMBus protocol in control_board.py; there is no
+# xmlrpc service in between any more. The port is picked in the GUI, the rest
+# is fixed by the protocol.
+MACHINE_ADDRESS = 0x0002
+MACHINE_BAUDRATE = 19200
+MACHINE_ENCRYPTION = True
+MACHINE_TIMEOUT = 5.0        # seconds to wait for a reply, so a silent board
+                             # cannot block the test thread forever
+DISPENSE_CALL_TIMEOUT = 120.0  # longer window for dispense_all, which may only
+                               # answer once the machine has picked the job up
 
-FILL_LEVEL = 3800          # value passed to correctFillLevel
+# dispense_nl() works in nanolitres while the window asks for millilitres.
+NL_PER_ML = 1_000_000
+
+# Smallest amount the machine can dispense, and the step the amount fields in
+# the window work in. Random amounts are drawn in the same step, so a value
+# from the log can also be typed in by hand.
+MIN_DISPENSE_ML = 0.8
+DISPENSE_STEP_ML = 0.1
+
+FILL_LEVEL = 3800000000          # value passed to correct_fill_level
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
 
-# Reactive timing: a dispense of N ml is given DISPENSE_DELAY seconds plus
-# DISPENSE_DELAY_PER_ML per ml, so a small dispense does not wait as long as
-# a large one.
-DISPENSE_DELAY = 5.0       # base wait after a dispense
-DISPENSE_DELAY_PER_ML = 0.2
+# Instead of guessing how long a dispense takes, the machine is asked:
+# get_status() answers "IDLE" or "DISPENSING", and the next round starts
+# once it is idle again. The answer covers the whole machine, not one unit.
+STATUS_IDLE = "IDLE"
+STATUS_POLL_INTERVAL = 0.5   # how often the machine is asked for its status
+
+# A machine that never returns to IDLE would keep the test waiting forever.
+DISPENSE_TIMEOUT = 600.0
 
 POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
 
@@ -74,11 +94,6 @@ POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
 # relay are bounded by the timeouts in relay.py, about a second, so the lock
 # is never held long; this is how long Stop waits for it.
 RELAY_LOCK_TIMEOUT = 3.0
-
-# The dispenser calls have no timeout of their own, so a server that stops
-# answering would block the test thread forever. This is a safety net, not a
-# tight bound: it has to be longer than the slowest legitimate call.
-DISPENSER_TIMEOUT = 300.0
 
 # A long dispense keeps the unit busy for a while, and the reply frame that
 # comes back afterwards is sometimes unreadable. Rather than ending the test,
@@ -96,13 +111,15 @@ class TestSettings:
 
     port: str = ""                     # COM port of the relay/STM32
     baudrate: int = 115200
+    machine_port: str = ""             # COM port of the machine's control board
     units: list[str] = field(default_factory=list)   # names from UNITS
     dispense_number: int = 0           # total number of dispenses in the test
     power_cycle_interval: int = 0      # power cycle every N dispenses, 0 = off
     random_dispense: bool = False      # False = fixed amount, True = random
-    dispense_amount: int = 0           # used when random_dispense is False
-    dispense_min: int = 0              # used when random_dispense is True
-    dispense_max: int = 0
+    dispense_amount: float = 0.0       # ml, used when random_dispense is False
+    dispense_min: float = 0.0          # ml, used when random_dispense is True
+    dispense_max: float = 0.0
+    max_units: int = 1                 # up to this many units dispense together
 
     def validate(self) -> Optional[str]:
         """
@@ -113,7 +130,11 @@ class TestSettings:
         is why it is Dutch.
         """
         if not self.port:
-            return "Selecteer een com-port."
+            return "Selecteer een com-port voor de relay."
+        if not self.machine_port:
+            return "Selecteer een com-port voor de machine."
+        if self.machine_port == self.port:
+            return "De relay en de machine kunnen niet op dezelfde com-port zitten."
         if not self.units:
             return "Selecteer minimaal één unit."
         # Catches a checkbox whose object name does not appear in UNITS,
@@ -123,74 +144,86 @@ class TestSettings:
             return f"Onbekende unit(s): {', '.join(unknown)}"
         if self.dispense_number <= 0:
             return "Aantal dispenses moet groter zijn dan 0."
+        if self.max_units < 1:
+            return "Max units per dispense moet minimaal 1 zijn."
         if self.random_dispense:
-            if self.dispense_max <= 0:
-                return "Vul een max dispense waarde in."
+            if self.dispense_min < MIN_DISPENSE_ML:
+                return f"Min dispense moet minimaal {MIN_DISPENSE_ML} ml zijn."
             if self.dispense_min > self.dispense_max:
                 return "Min dispense mag niet groter zijn dan max."
-        elif self.dispense_amount <= 0:
-            return "Vul een dispense hoeveelheid in."
+        elif self.dispense_amount < MIN_DISPENSE_ML:
+            return f"Dispense hoeveelheid moet minimaal {MIN_DISPENSE_ML} ml zijn."
         return None
 
-    def next_amount(self) -> int:
-        """Amount in ml for the next dispense, fixed or drawn at random."""
-        if self.random_dispense:
-            return random.randint(self.dispense_min, self.dispense_max)
-        return self.dispense_amount
+    def next_amount(self) -> float:
+        """
+        Amount in ml for one unit: the fixed value, or one drawn at random
+        between min and max.
+
+        The draw is in whole steps of DISPENSE_STEP_ML rather than anywhere in
+        between, so an amount from the log is one you could also have typed
+        into the window yourself.
+        """
+        if not self.random_dispense:
+            return self.dispense_amount
+        low = round(self.dispense_min / DISPENSE_STEP_ML)
+        high = round(self.dispense_max / DISPENSE_STEP_ML)
+        return round(random.randint(low, high) * DISPENSE_STEP_ML, 1)
+
+    def next_units(self) -> list[str]:
+        """
+        The units for the next round: between one and max_units of them, drawn
+        at random from the ones ticked in the window. So max_units = 1 always
+        gives a single unit, and 6 gives anywhere from one to six.
+
+        Never more than are ticked, and never the same unit twice in a round:
+        a unit queued twice would dispense twice.
+        """
+        ceiling = min(self.max_units, len(self.units))
+        return random.sample(self.units, random.randint(1, ceiling))
 
 
-class _TimeoutTransport(xmlrpc.client.Transport):
+class _LoggedBoard:
     """
-    xmlrpc transport that puts a timeout on the connection.
+    Wraps ControlBoard so every exchange with the machine is logged: the
+    command with its arguments, how long it took, and the variables that came
+    back or the error it raised.
 
-    ServerProxy has no timeout parameter, so without this a dispenser that
-    stops answering leaves the test thread waiting on a socket read for as
-    long as the application runs.
+    Wrapping rather than logging at each call site means a command added later
+    is logged too, and the loop stays readable. vimbus does log the raw frames
+    itself, but on the root logger and at debug level.
     """
 
-    def __init__(self, timeout: float, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.timeout = timeout
+    # Waiting for a dispense asks the machine for its status twice a second,
+    # which would bury everything else: a dispense of a hundred seconds is four
+    # hundred lines saying the same thing. Those go to debug level, so the file
+    # keeps the story ("CX01 is begonnen", "CX01 is klaar na 98.5 s") while
+    # every single exchange is still there when logging runs at DEBUG.
+    # Failures are always logged, however often the command is sent.
+    QUIET_CALLS = {"get_status"}
 
-    def make_connection(self, host):
-        connection = super().make_connection(host)
-        connection.timeout = self.timeout
-        return connection
-
-
-class _LoggedServer:
-    """
-    Wraps the xmlrpc proxy so every call to the dispenser is logged: the
-    method with its arguments, how long it took, and what came back or which
-    fault it raised.
-
-    Wrapping rather than logging at each call site means a call added later
-    is logged too, and the loop stays readable.
-    """
-
-    def __init__(self, server):
-        self._server = server
+    def __init__(self, board: ControlBoard):
+        self.board = board
 
     def __getattr__(self, name: str):
-        method = getattr(self._server, name)
+        method = getattr(self.board, name)
+        level = logging.DEBUG if name in self.QUIET_CALLS else logging.INFO
 
-        def call(*args):
+        def call(*args, **kwargs):
             arguments = ", ".join(repr(a) for a in args)
-            dispenser_log.info("TX  %s(%s)", name, arguments)
+            machine_log.log(level, "TX  %s(%s)", name, arguments)
             started = time.time()
             try:
-                result = method(*args)
-            except xmlrpc.client.Fault as fault:
-                dispenser_log.error("RX  %s FOUT na %.0f ms: %s",
-                                    name, (time.time() - started) * 1000, fault.faultString)
-                raise
+                result = method(*args, **kwargs)
             except Exception as exc:                 # noqa: BLE001 - log, then pass on
-                dispenser_log.error("RX  %s mislukt na %.0f ms: %s",
-                                    name, (time.time() - started) * 1000, exc)
+                machine_log.error("RX  %s mislukt na %.0f ms: %s",
+                                  name, (time.time() - started) * 1000, exc)
                 raise
-            dispenser_log.info("RX  %s -> %s   (%.0f ms)",
-                               name, "ok" if result is None else repr(result),
-                               (time.time() - started) * 1000)
+            # A Command carries its decoded variables; show those rather than
+            # the object, since that is what the machine actually answered.
+            answer = getattr(result, "vars", result)
+            machine_log.log(level, "RX  %s -> %s   (%.0f ms)",
+                            name, answer, (time.time() - started) * 1000)
             return result
 
         return call
@@ -225,13 +258,16 @@ class DuurTest:
         self.percentage = 0                 # 0..100, for the progress bar
         self.message = ""                   # last status line, for the status bar
         self.error: Optional[str] = None    # set when the test failed
-        self.resyncs = 0                    # times the dispenser had to be reconnected
+        self.resyncs = 0                    # times the machine had to be reconnected
+        self.warnings = 0                   # warning codes the machine returned
+        self.errors = 0                     # error codes the machine returned
         self.logfile: Optional[Path] = None  # log file of this run
 
         self.relay = None                              # created by _loop()
+        self.machine = None                            # created by _open_machine()
+        self._machine_serial: Optional[serial.Serial] = None
         self._log_handler: Optional[logging.Handler] = None
         self._stop = False                             # stop requested
-        self._busy_until = 0.0                         # when the running dispense ends
         self._thread: Optional[threading.Thread] = None
         # Held by whichever thread is talking to the relay, so stop() can cut
         # the power without landing in the middle of a command.
@@ -260,12 +296,12 @@ class DuurTest:
         log.info("=" * 70)
         log.info("Test gestart: %d dispenses over %d units", s.dispense_number, len(s.units))
         log.info("  relay      : %s @ %s baud", s.port, s.baudrate)
-        log.info("  dispenser  : %s @ %s baud, adres %s, %s",
-                 DISPENSER_PORT, DISPENSER_BAUDRATE, DISPENSER_ADDRESS, DISPENSER_URL)
+        log.info("  machine    : %s @ %s baud, adres 0x%04X",
+                 s.machine_port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
         log.info("  units      : %s", ", ".join(s.units))
         log.info("  hoeveelheid: %s",
-                 f"{s.dispense_min}-{s.dispense_max} ml random" if s.random_dispense
-                 else f"{s.dispense_amount} ml vast")
+                 f"{s.dispense_min:.1f}-{s.dispense_max:.1f} ml random per unit"
+                 if s.random_dispense else f"{s.dispense_amount:.1f} ml vast")
         log.info("  powercycle : %s",
                  f"elke {s.power_cycle_interval} dispenses" if s.power_cycle_interval else "uit")
 
@@ -281,7 +317,7 @@ class DuurTest:
         off right here rather than leaving that to the test thread.
 
         That last part matters: if the test thread is stuck in a call to the
-        dispenser it never reaches its own shutdown, and the machine would
+        machine it never reaches its own shutdown, and the machine would
         stay powered for as long as that call hangs. Stop has to work then
         too, so it cuts the power itself.
 
@@ -316,11 +352,8 @@ class DuurTest:
         try:
             self._loop()
             self.completed = True
-            # Mention the reconnects: a run that needed a lot of them
-            # finished, but says something about the connection.
-            self.message = ("Test afgerond" if not self.resyncs else
-                            f"Test afgerond, {self.resyncs}x opnieuw verbonden met de dispenser")
-            log.info("Test afgerond, %d resync(s)", self.resyncs)
+            self.message = self._summary()
+            log.info(self.message)
         except _Stopped:
             self.message = "Test gestopt"
             log.info("Test gestopt door de gebruiker bij %d%%", self.percentage)
@@ -340,6 +373,19 @@ class DuurTest:
             # which it notices the test has ended.
             self.running = False
 
+    def _summary(self) -> str:
+        """
+        How the run went, in one line: not just that it finished, but what
+        the machine reported along the way.
+        """
+        parts = [
+            f"{self.warnings} waarschuwing" + ("en" if self.warnings != 1 else ""),
+            f"{self.errors} fout" + ("en" if self.errors != 1 else ""),
+        ]
+        if self.resyncs:
+            parts.append(f"{self.resyncs}x opnieuw verbonden")
+        return "Test afgerond: " + ", ".join(parts)
+
     def _loop(self) -> None:
         """The test itself: connect, dispense, power cycle, disconnect."""
         settings = self.settings
@@ -358,40 +404,28 @@ class DuurTest:
         with self._relay_lock:
             self.relay.connect()
 
-        # ServerProxy does not talk to the network yet; the first call does.
-        # The transport carries a timeout so a dispenser that stops answering
-        # cannot block this thread indefinitely.
-        server = _LoggedServer(xmlrpc.client.ServerProxy(
-            DISPENSER_URL, allow_none=True,
-            transport=_TimeoutTransport(DISPENSER_TIMEOUT),
-        ))
-
         try:
-            self._power_on(self.relay, server)
+            self._power_on(self.relay)
 
             for done in range(1, total + 1):
                 self._check_stop()
 
-                unit = random.choice(settings.units)
-                amount = settings.next_amount()
-                self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
-                log.info("--- Dispense %d/%d: %s, %d ml ---", done, total, unit, amount)
+                # Every unit in the round draws its own amount, so in random
+                # mode they do not all dispense the same thing.
+                portions = [(unit, settings.next_amount())
+                            for unit in settings.next_units()]
+                namen = ", ".join(f"{unit} {ml:.1f} ml" for unit, ml in portions)
+                self.message = f"Dispense {done}/{total}: {namen}"
+                log.info("--- Dispense %d/%d: %s ---", done, total, namen)
 
-                self._prepare_dispense(server, unit, amount)
-                garbled = self._start_dispense(server)
-
-                # Reactive timing: bigger dispense, longer wait. _busy_until
-                # records when the unit should be done, so the shutdown below
-                # knows whether it is still running.
-                wait = DISPENSE_DELAY + amount * DISPENSE_DELAY_PER_ML
-                self._busy_until = time.monotonic() + wait
-                self._sleep(wait)
-
+                self._prepare_dispense(portions)
+                garbled = self._start_dispense()
                 if garbled:
                     # The reply was unreadable, so the connection is out of
-                    # step. Resync now that the unit has had its time, so the
-                    # next round starts clean.
-                    self._resync(server)
+                    # step. Resync before asking the machine anything else.
+                    self._resync()
+
+                self._wait_until_idle(namen)
 
                 self.percentage = int(done / total * 100)
 
@@ -402,7 +436,7 @@ class DuurTest:
                     log.info("Power cycle na %d dispenses", done)
                     self._power_off_now()
                     self._sleep(POWER_OFF_DELAY)
-                    self._power_on(self.relay, server)
+                    self._power_on(self.relay)
         finally:
             # Runs on a normal finish, on stop and on an error, so the units
             # are never left powered. stop() may have switched off already;
@@ -411,89 +445,242 @@ class DuurTest:
             self._power_off_now()
             with self._relay_lock:
                 self.relay.disconnect()
+            self._close_machine()
 
-    # -- talking to the dispenser -----------------------------------
-    def _prepare_dispense(self, server, unit: str, amount: int) -> None:
+    # -- talking to the machine -------------------------------------
+    def _open_machine(self) -> None:
         """
-        Poll the dispenser, correct the fill level and prepare the unit.
+        Open the serial port to the control board and greet it with a poll.
 
-        These three only read and adjust state, so they may be repeated
-        safely. A Fault here is nearly always a garbled reply frame, such as
+        The port carries a timeout, unlike the example in temp.py: without one
+        a board that stops answering would leave readline() waiting for as
+        long as the application runs.
+        """
+        port = self.settings.machine_port
+        self.message = f"Verbinden met de machine op {port}..."
+        log.info("Machine: poort %s openen op %d baud, adres 0x%04X",
+                 port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
+
+        self._machine_serial = serial.Serial(port, baudrate=MACHINE_BAUDRATE,
+                                             timeout=MACHINE_TIMEOUT)
+        self.machine = _LoggedBoard(ControlBoard(MACHINE_ADDRESS, self._machine_serial,
+                                                 machine_log, MACHINE_ENCRYPTION))
+        self.machine.poll()
+
+    def _close_machine(self) -> None:
+        """Close the serial port to the control board. Never raises."""
+        try:
+            if self._machine_serial is not None and self._machine_serial.is_open:
+                self._machine_serial.close()
+                log.info("Machine: poort gesloten")
+        except Exception:                        # noqa: BLE001 - shutting down wins
+            pass
+        self.machine = None
+        self._machine_serial = None
+
+    def _check_result(self, command, what: str) -> None:
+        """
+        Look at the result_code the machine returned and keep score.
+
+        The machine answers with a code rather than an exception: Ok, a
+        warning such as "unit almost empty", or an error such as "fill level
+        too low to dispense". None of them stop the test, they are counted and
+        logged, and the tally ends up in the final message.
+        """
+        code = getattr(command, "vars", {}).get("result_code")
+        if code is None or code == ResultCode.OK:
+            return
+
+        name = code.name if isinstance(code, ResultCode) else str(code)
+        if name.startswith("WARN_"):
+            self.warnings += 1
+            log.warning("%s: %s", what, name)
+        else:
+            self.errors += 1
+            log.error("%s: %s", what, name)
+
+    def _prepare_dispense(self, portions: list[tuple[str, float]]) -> None:
+        """
+        Correct the fill level of every unit in this round and queue them all
+        with their own amount. dispense_all() then sets them off together.
+
+        A failure here is nearly always a garbled reply frame, such as
 
             Expected encrypted string '0071;0A08;416A00265D\\n'
             to contain 4 parts, got 3
 
         which means the serial connection is out of step: bytes were lost or
-        a leftover fragment was read as if it were a new frame. Reconnecting
-        starts a fresh frame and the same call then succeeds, so the test
-        survives it instead of ending on the second dispense.
+        a leftover fragment was read as if it were a new frame. Reopening the
+        port starts a fresh frame and the same commands then succeed, so the
+        test survives it instead of ending on the second dispense.
+
+        A round is queued again from the first unit, not continued halfway.
+        Since part of it may already be queued, and a unit queued twice would
+        dispense twice, the queue is cleared first.
         """
+        self._check_result(
+            self.machine.dispense_cancel(),
+            f"dispense_cancel()")
+
         for attempt in range(1, DISPENSER_RETRIES + 1):
             try:
-                server.poll()
-                server.correctFillLevel(unit, UNITS[unit], FILL_LEVEL)
-                server.prepareUnitForDispense(unit, amount)
+                for unit, amount_ml in portions:
+                    
+                    self._check_result(
+                        self.machine.get_solenoid_temperature(UNITS[unit]),
+                        f"get_solenoid_temperature({unit})")
+                    self._check_result(
+                        self.machine.get_fill_level(unit),
+                        f"get_fill_level({unit})")
+                    self._check_result(
+                        self.machine.correct_fill_level(unit, UNITS[unit], FILL_LEVEL),
+                        f"correct_fill_level({unit})")
+                    self._check_result(
+                        self.machine.get_fill_level(unit),
+                        f"get_fill_level({unit})")
+                    # dispense_nl takes whole nanolitres, the window millilitres.
+                    self._check_result(
+                        self.machine.dispense_nl(unit, round(amount_ml * NL_PER_ML)),
+                        f"dispense_nl({unit}, {amount_ml:.1f} ml)")
                 return
-            except xmlrpc.client.Fault as fault:
-                # Out of attempts: let it end the test, with the dispenser's
-                # own message so it is clear where it came from.
+            except _Stopped:
+                raise
+            except Exception as exc:             # noqa: BLE001 - vimbus raises plain Exception
+                # Out of attempts: let it end the test, with the machine's own
+                # message so it is clear where it came from.
                 if attempt == DISPENSER_RETRIES:
                     raise
                 self.resyncs += 1
-                self.message = (f"Dispenser antwoordde onleesbaar, poging "
-                                f"{attempt} van {DISPENSER_RETRIES}: {fault.faultString}")
+                self.message = (f"Machine antwoordde onleesbaar, poging "
+                                f"{attempt} van {DISPENSER_RETRIES}: {exc}")
                 log.warning("Onleesbaar antwoord (poging %d/%d), opnieuw verbinden: %s",
-                            attempt, DISPENSER_RETRIES, fault.faultString)
-                self._resync(server)
+                            attempt, DISPENSER_RETRIES, exc)
+                self._resync()
+                self._cancel_queue()
 
-    def _start_dispense(self, server) -> bool:
+    def _cancel_queue(self) -> None:
         """
-        Trigger the prepared dispense. Returns True when the reply was
-        unreadable, so the caller knows a resync is needed.
-
-        Deliberately not retried: a Fault means the answer was unreadable,
-        not that nothing happened. The unit may well be dispensing already,
-        and repeating the command could dispense the amount twice.
+        Clear whatever is queued for dispensing. Best effort: on a connection
+        that is already unhappy this may fail too, and the retry after it will
+        report that.
         """
         try:
-            server.dispenseAllPreparedUnits()
+            self._check_result(self.machine.dispense_cancel(), "dispense_cancel")
+        except _Stopped:
+            raise
+        except Exception as exc:                 # noqa: BLE001 - retry reports it
+            log.warning("Wachtrij leegmaken mislukte: %s", exc)
+
+    def _start_dispense(self) -> bool:
+        """
+        Trigger the queued dispense. Returns True when the reply was
+        unreadable, so the caller knows a resync is needed.
+
+        Deliberately not retried: a failure means the answer was unreadable,
+        not that nothing happened. The machine may well be dispensing already,
+        and repeating the command could dispense the amount twice.
+
+        The call gets a longer timeout of its own, since dispense_all may only
+        answer once the machine has taken the job on.
+        """
+        try:
+            with self.machine.board.override_timeout(DISPENSE_CALL_TIMEOUT):
+                self._check_result(self.machine.dispense_all(), "dispense_all")
             return False
-        except xmlrpc.client.Fault as fault:
+        except _Stopped:
+            raise
+        except Exception as exc:                 # noqa: BLE001 - vimbus raises plain Exception
             self.resyncs += 1
-            self.message = (f"Antwoord op de dispense was onleesbaar ({fault.faultString}); "
-                            f"niet herhaald, de unit kan al bezig zijn")
-            log.warning("Antwoord op dispenseAllPreparedUnits onleesbaar, NIET herhaald: %s",
-                        fault.faultString)
+            self.message = (f"Antwoord op de dispense was onleesbaar ({exc}); "
+                            f"niet herhaald, de machine kan al bezig zijn")
+            log.warning("Antwoord op dispense_all onleesbaar, NIET herhaald: %s", exc)
             return True
 
-    def _resync(self, server) -> None:
+    def _wait_until_idle(self, unit: str) -> None:
         """
-        Reconnect to the dispenser so a half-read frame is discarded.
+        Wait until the machine reports IDLE again, rather than guessing how
+        long a dispense of this size takes.
 
-        Faults are swallowed: if the reconnect itself fails, the next
+        get_status() takes no arguments and describes the machine as a whole;
+        unit is only used to say in the log which dispense was being waited
+        on.
+
+        The first IDLE ends the wait. There is no grace period for the
+        machine to get going: dispense_all() only returns after it has spent
+        two seconds collecting the machine's log messages, so by the time the
+        first status is asked the machine has long since started. Whether it
+        was ever seen busy is still worth a word in the log, since a dispense
+        that was already over says something about how short it was.
+
+        A garbled reply is not fatal here, since asking for a status changes
+        nothing: the connection is resynced and the next poll tries again.
+        """
+        started = time.monotonic()
+        seen_busy = False
+        status = "?"
+
+        while True:
+            self._check_stop()
+
+            try:
+                status = str(self.machine.get_status().vars["status"]).strip().upper()
+            except _Stopped:
+                raise
+            except Exception as exc:             # noqa: BLE001 - vimbus raises plain Exception
+                # Unreadable answer; resync and ask again on the next poll.
+                self.resyncs += 1
+                log.warning("Onleesbaar antwoord op get_status(), opnieuw verbinden: %s", exc)
+                self._resync()
+                status = "?"
+            else:
+                if status == STATUS_IDLE:
+                    log.info("%s is klaar na %.1f s%s", unit, time.monotonic() - started,
+                             "" if seen_busy else " (was al klaar bij de eerste controle)")
+                    return
+                elif not seen_busy:
+                    seen_busy = True
+                    log.info("%s is begonnen (machinestatus %s)", unit, status)
+
+            if time.monotonic() - started > DISPENSE_TIMEOUT:
+                raise TimeoutError(
+                    f"De machine staat na {DISPENSE_TIMEOUT:.0f} s nog niet op "
+                    f"{STATUS_IDLE} (laatste status: {status})"
+                )
+
+            self.message = f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)"
+            self._sleep(STATUS_POLL_INTERVAL)
+
+    def _resync(self) -> None:
+        """
+        Close and reopen the serial port to the machine, so a half-read frame
+        is discarded and the next command starts on a clean line.
+
+        Failures are swallowed: if reopening does not work either, the next
         attempt reports the problem, and after DISPENSER_RETRIES tries the
-        test ends with the dispenser's own message.
+        test ends with the machine's own message.
         """
         self._sleep(RESYNC_DELAY)
         try:
-            server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
-        except xmlrpc.client.Fault:
-            pass
+            self._close_machine()
+            self._open_machine()
+        except _Stopped:
+            raise
+        except Exception as exc:                 # noqa: BLE001 - next attempt reports it
+            log.warning("Opnieuw verbinden met de machine mislukte: %s", exc)
 
     # -- helpers ----------------------------------------------------
-    def _power_on(self, relay, server) -> None:
+    def _power_on(self, relay) -> None:
         """
-        Switch the power on and connect to the dispenser.
+        Switch the power on and connect to the machine.
 
-        The dispenser loses power together with the units, so after every
-        power cycle it has to be connected and polled again.
+        The control board loses power together with the units, so after every
+        power cycle the serial port is opened again from scratch.
         """
         with self._relay_lock:
             relay.turn_on()
         self._sleep(POWER_ON_DELAY)
-        self.message = f"Verbinden met dispenser op {DISPENSER_PORT}..."
-        server.connect(DISPENSER_PORT, DISPENSER_ADDRESS, DISPENSER_BAUDRATE)
-        server.poll()
+        self._close_machine()
+        self._open_machine()
 
     def _settle(self) -> None:
         """
@@ -505,9 +692,12 @@ class DuurTest:
         That one raises as soon as Stop has been pressed, which would skip
         exactly the wait that matters here.
 
-        Note that this is a fixed pause, so pressing Stop halfway through a
-        large dispense still cuts the power while the unit is running. Wait
-        for the dispense to finish first by using self._busy_until here.
+        Note that this is a fixed pause. A run that finishes normally has
+        already waited for the unit to report IDLE, so nothing is running by
+        then; pressing Stop halfway through a dispense does cut the power
+        while the unit is busy. Waiting for it would mean calling
+        _wait_until_idle() here, at the cost of a Stop that takes as long as
+        the dispense still needs.
         """
         self.message = "Spanning gaat eraf..."
         time.sleep(POWER_OFF_DELAY)
@@ -575,14 +765,16 @@ if __name__ == "__main__":
 
     setup_logging()
     test = DuurTest(TestSettings(
-        port="COM11",
+        port="COM3",              # relay
         baudrate=115200,
+        machine_port="COM6",      # control board
         units=["CX01", "MH01", "YH04"],
         dispense_number=10,
         power_cycle_interval=5,
         random_dispense=True,
-        dispense_min=1,
-        dispense_max=500,
+        dispense_min=0.8,
+        dispense_max=10.0,
+        max_units=3,
     ))
     test.start()
     # Same status attributes the GUI polls, printed once a second.
