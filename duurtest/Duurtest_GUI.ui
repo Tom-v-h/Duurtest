@@ -494,7 +494,7 @@ color: rgb(255,255,255);</string>
       <property name="title">
        <string>Dispense amount</string>
       </property>
-      <widget class="QSpinBox" name="DispenseAmount_spinBox">
+      <widget class="QDoubleSpinBox" name="DispenseAmount_spinBox">
        <property name="enabled">
         <bool>false</bool>
        </property>
@@ -506,8 +506,21 @@ color: rgb(255,255,255);</string>
          <height>22</height>
         </rect>
        </property>
+      
+       <property name="decimals">
+        <number>1</number>
+       </property>
+       <property name="minimum">
+        <double>0.800000000000000</double>
+       </property>
        <property name="maximum">
-        <number>100000</number>
+        <double>100000.000000000000000</double>
+       </property>
+       <property name="singleStep">
+        <double>0.100000000000000</double>
+       </property>
+       <property name="value">
+        <double>0.800000000000000</double>
        </property>
       </widget>
       <widget class="QRadioButton" name="Const_radioButton">
@@ -536,7 +549,7 @@ color: rgb(255,255,255);</string>
         <string>Random value</string>
        </property>
       </widget>
-      <widget class="QSpinBox" name="MinDispense_spinBox">
+      <widget class="QDoubleSpinBox" name="MinDispense_spinBox">
        <property name="enabled">
         <bool>false</bool>
        </property>
@@ -548,11 +561,24 @@ color: rgb(255,255,255);</string>
         <height>22</height>
        </rect>
        </property>
+      
+       <property name="decimals">
+        <number>1</number>
+       </property>
+       <property name="minimum">
+        <double>0.800000000000000</double>
+       </property>
        <property name="maximum">
-        <number>100000</number>
+        <double>100000.000000000000000</double>
+       </property>
+       <property name="singleStep">
+        <double>0.100000000000000</double>
+       </property>
+       <property name="value">
+        <double>0.800000000000000</double>
        </property>
       </widget>
-      <widget class="QSpinBox" name="MaxDispense_spinBox">
+      <widget class="QDoubleSpinBox" name="MaxDispense_spinBox">
        <property name="enabled">
         <bool>false</bool>
        </property>
@@ -564,8 +590,21 @@ color: rgb(255,255,255);</string>
         <height>22</height>
        </rect>
        </property>
+      
+       <property name="decimals">
+        <number>1</number>
+       </property>
+       <property name="minimum">
+        <double>0.800000000000000</double>
+       </property>
        <property name="maximum">
-        <number>100000</number>
+        <double>100000.000000000000000</double>
+       </property>
+       <property name="singleStep">
+        <double>0.100000000000000</double>
+       </property>
+       <property name="value">
+        <double>0.800000000000000</double>
        </property>
       </widget>
       <widget class="QLabel" name="label_3">

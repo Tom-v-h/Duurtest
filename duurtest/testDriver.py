@@ -68,6 +68,12 @@ DISPENSE_CALL_TIMEOUT = 120.0  # longer window for dispense_all, which may only
 # dispense_nl() works in nanolitres while the window asks for millilitres.
 NL_PER_ML = 1_000_000
 
+# Smallest amount the machine can dispense, and the step the amount fields in
+# the window work in. Random amounts are drawn in the same step, so a value
+# from the log can also be typed in by hand.
+MIN_DISPENSE_ML = 0.8
+DISPENSE_STEP_ML = 0.1
+
 FILL_LEVEL = 3800000000          # value passed to correct_fill_level
 POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
 POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
@@ -110,9 +116,9 @@ class TestSettings:
     dispense_number: int = 0           # total number of dispenses in the test
     power_cycle_interval: int = 0      # power cycle every N dispenses, 0 = off
     random_dispense: bool = False      # False = fixed amount, True = random
-    dispense_amount: int = 0           # used when random_dispense is False
-    dispense_min: int = 0              # used when random_dispense is True
-    dispense_max: int = 0
+    dispense_amount: float = 0.0       # ml, used when random_dispense is False
+    dispense_min: float = 0.0          # ml, used when random_dispense is True
+    dispense_max: float = 0.0
     max_units: int = 1                 # up to this many units dispense together
 
     def validate(self) -> Optional[str]:
@@ -141,19 +147,28 @@ class TestSettings:
         if self.max_units < 1:
             return "Max units per dispense moet minimaal 1 zijn."
         if self.random_dispense:
-            if self.dispense_max <= 0:
-                return "Vul een max dispense waarde in."
+            if self.dispense_min < MIN_DISPENSE_ML:
+                return f"Min dispense moet minimaal {MIN_DISPENSE_ML} ml zijn."
             if self.dispense_min > self.dispense_max:
                 return "Min dispense mag niet groter zijn dan max."
-        elif self.dispense_amount <= 0:
-            return "Vul een dispense hoeveelheid in."
+        elif self.dispense_amount < MIN_DISPENSE_ML:
+            return f"Dispense hoeveelheid moet minimaal {MIN_DISPENSE_ML} ml zijn."
         return None
 
-    def next_amount(self) -> int:
-        """Amount in ml for the next dispense, fixed or drawn at random."""
-        if self.random_dispense:
-            return random.randint(self.dispense_min, self.dispense_max)
-        return self.dispense_amount
+    def next_amount(self) -> float:
+        """
+        Amount in ml for one unit: the fixed value, or one drawn at random
+        between min and max.
+
+        The draw is in whole steps of DISPENSE_STEP_ML rather than anywhere in
+        between, so an amount from the log is one you could also have typed
+        into the window yourself.
+        """
+        if not self.random_dispense:
+            return self.dispense_amount
+        low = round(self.dispense_min / DISPENSE_STEP_ML)
+        high = round(self.dispense_max / DISPENSE_STEP_ML)
+        return round(random.randint(low, high) * DISPENSE_STEP_ML, 1)
 
     def next_units(self) -> list[str]:
         """
@@ -285,8 +300,8 @@ class DuurTest:
                  s.machine_port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
         log.info("  units      : %s", ", ".join(s.units))
         log.info("  hoeveelheid: %s",
-                 f"{s.dispense_min}-{s.dispense_max} ml random" if s.random_dispense
-                 else f"{s.dispense_amount} ml vast")
+                 f"{s.dispense_min:.1f}-{s.dispense_max:.1f} ml random per unit"
+                 if s.random_dispense else f"{s.dispense_amount:.1f} ml vast")
         log.info("  powercycle : %s",
                  f"elke {s.power_cycle_interval} dispenses" if s.power_cycle_interval else "uit")
 
@@ -395,14 +410,15 @@ class DuurTest:
             for done in range(1, total + 1):
                 self._check_stop()
 
-                units = settings.next_units()
-                amount = settings.next_amount()
-                namen = ", ".join(units)
-                self.message = f"Dispense {done}/{total}: {namen}, {amount} ml"
-                log.info("--- Dispense %d/%d: %s, %d ml per unit ---",
-                         done, total, namen, amount)
-		
-                self._prepare_dispense(units, amount)
+                # Every unit in the round draws its own amount, so in random
+                # mode they do not all dispense the same thing.
+                portions = [(unit, settings.next_amount())
+                            for unit in settings.next_units()]
+                namen = ", ".join(f"{unit} {ml:.1f} ml" for unit, ml in portions)
+                self.message = f"Dispense {done}/{total}: {namen}"
+                log.info("--- Dispense %d/%d: %s ---", done, total, namen)
+
+                self._prepare_dispense(portions)
                 garbled = self._start_dispense()
                 if garbled:
                     # The reply was unreadable, so the connection is out of
@@ -483,10 +499,10 @@ class DuurTest:
             self.errors += 1
             log.error("%s: %s", what, name)
 
-    def _prepare_dispense(self, units: list[str], amount_ml: int) -> None:
+    def _prepare_dispense(self, portions: list[tuple[str, float]]) -> None:
         """
         Correct the fill level of every unit in this round and queue them all
-        for the coming dispense. dispense_all() then sets them off together.
+        with their own amount. dispense_all() then sets them off together.
 
         A failure here is nearly always a garbled reply frame, such as
 
@@ -504,7 +520,7 @@ class DuurTest:
         """
         for attempt in range(1, DISPENSER_RETRIES + 1):
             try:
-                for unit in units: 
+                for unit, amount_ml in portions:
                     self._check_result(
                         self.machine.dispense_cancel(),
                         f"dispense_cancel()")
@@ -517,9 +533,10 @@ class DuurTest:
                     self._check_result(
                         self.machine.get_fill_level(unit),
                         f"get_fill_level({unit})")
+                    # dispense_nl takes whole nanolitres, the window millilitres.
                     self._check_result(
-                        self.machine.dispense_nl(unit, amount_ml * NL_PER_ML),
-                        f"dispense_nl({unit}, {amount_ml} ml)")
+                        self.machine.dispense_nl(unit, round(amount_ml * NL_PER_ML)),
+                        f"dispense_nl({unit}, {amount_ml:.1f} ml)")
                 return
             except _Stopped:
                 raise
@@ -750,8 +767,9 @@ if __name__ == "__main__":
         dispense_number=10,
         power_cycle_interval=5,
         random_dispense=True,
-        dispense_min=1,
-        dispense_max=10,
+        dispense_min=0.8,
+        dispense_max=10.0,
+        max_units=3,
     ))
     test.start()
     # Same status attributes the GUI polls, printed once a second.

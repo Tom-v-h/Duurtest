@@ -88,9 +88,12 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Com-port machine | seriële poort van de control board van de machine |
 | Number of dispenses | totaal aantal dispenses in de test |
 | Power cycle interval | na elke N dispenses gaat de spanning eraf en weer aan, 0 = uit |
-| Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max |
+| Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max; minimaal 0,8 ml, in stappen van 0,1 |
 | Max units per dispense | 1 tot 6: per ronde doseren er zoveel units tegelijk, willekeurig getrokken tussen 1 en deze waarde |
 | Unit List | welke units meedoen; per ronde worden daar willekeurig units uit gekozen |
+
+Bij een willekeurige hoeveelheid trekt elke unit in een ronde zijn eigen waarde,
+dus twee units die tegelijk doseren krijgen elk een andere hoeveelheid.
 
 Na elke dispense vraagt de driver de machine met `get_status()` om zijn status
 en wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste
