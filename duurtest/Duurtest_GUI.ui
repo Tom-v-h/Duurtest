@@ -483,7 +483,7 @@ color: rgb(255,255,255);</string>
         <x>280</x>
         <y>20</y>
         <width>231</width>
-        <height>361</height>
+        <height>380</height>
        </rect>
       </property>
       <property name="styleSheet">
@@ -526,11 +526,11 @@ color: rgb(255,255,255);</string>
       <widget class="QRadioButton" name="Random_radioButton">
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>180</y>
-         <width>151</width>
-         <height>17</height>
-        </rect>
+        <x>20</x>
+        <y>150</y>
+        <width>151</width>
+        <height>17</height>
+       </rect>
        </property>
        <property name="text">
         <string>Random value</string>
@@ -542,11 +542,11 @@ color: rgb(255,255,255);</string>
        </property>
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>240</y>
-         <width>191</width>
-         <height>22</height>
-        </rect>
+        <x>20</x>
+        <y>210</y>
+        <width>191</width>
+        <height>22</height>
+       </rect>
        </property>
        <property name="maximum">
         <number>100000</number>
@@ -558,11 +558,11 @@ color: rgb(255,255,255);</string>
        </property>
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>310</y>
-         <width>191</width>
-         <height>22</height>
-        </rect>
+        <x>20</x>
+        <y>280</y>
+        <width>191</width>
+        <height>22</height>
+       </rect>
        </property>
        <property name="maximum">
         <number>100000</number>
@@ -593,11 +593,11 @@ color: rgb(255,255,255);</string>
        </property>
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>210</y>
-         <width>201</width>
-         <height>21</height>
-        </rect>
+        <x>20</x>
+        <y>180</y>
+        <width>201</width>
+        <height>21</height>
+       </rect>
        </property>
        <property name="styleSheet">
         <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
@@ -612,11 +612,11 @@ color: rgb(255,255,255);</string>
        </property>
        <property name="geometry">
         <rect>
-         <x>20</x>
-         <y>280</y>
-         <width>201</width>
-         <height>21</height>
-        </rect>
+        <x>20</x>
+        <y>250</y>
+        <width>201</width>
+        <height>21</height>
+       </rect>
        </property>
        <property name="styleSheet">
         <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
@@ -625,7 +625,39 @@ color: rgb(255,255,255);</string>
         <string>Max</string>
        </property>
       </widget>
-     </widget>
+           <widget class="QLabel" name="label_10">
+       <property name="geometry">
+        <rect>
+         <x>20</x>
+         <y>315</y>
+         <width>201</width>
+         <height>21</height>
+        </rect>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">font: 12pt &quot;MS Shell Dlg 2&quot;;</string>
+       </property>
+       <property name="text">
+        <string>Max units per dispense</string>
+       </property>
+      </widget>
+      <widget class="QSpinBox" name="UnitCount_spinBox">
+       <property name="geometry">
+        <rect>
+         <x>20</x>
+         <y>345</y>
+         <width>191</width>
+         <height>22</height>
+        </rect>
+       </property>
+       <property name="minimum">
+        <number>1</number>
+       </property>
+       <property name="maximum">
+        <number>6</number>
+       </property>
+      </widget>
+</widget>
      <widget class="QGroupBox" name="DispenseNumberSelect">
       <property name="geometry">
        <rect>

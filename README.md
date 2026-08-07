@@ -89,7 +89,8 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Number of dispenses | totaal aantal dispenses in de test |
 | Power cycle interval | na elke N dispenses gaat de spanning eraf en weer aan, 0 = uit |
 | Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max |
-| Unit List | welke units meedoen; per dispense wordt er willekeurig één gekozen |
+| Max units per dispense | 1 tot 6: per ronde doseren er zoveel units tegelijk, willekeurig getrokken tussen 1 en deze waarde |
+| Unit List | welke units meedoen; per ronde worden daar willekeurig units uit gekozen |
 
 Na elke dispense vraagt de driver de machine met `get_status()` om zijn status
 en wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste

@@ -113,6 +113,7 @@ class TestSettings:
     dispense_amount: int = 0           # used when random_dispense is False
     dispense_min: int = 0              # used when random_dispense is True
     dispense_max: int = 0
+    max_units: int = 1                 # up to this many units dispense together
 
     def validate(self) -> Optional[str]:
         """
@@ -137,6 +138,8 @@ class TestSettings:
             return f"Onbekende unit(s): {', '.join(unknown)}"
         if self.dispense_number <= 0:
             return "Aantal dispenses moet groter zijn dan 0."
+        if self.max_units < 1:
+            return "Max units per dispense moet minimaal 1 zijn."
         if self.random_dispense:
             if self.dispense_max <= 0:
                 return "Vul een max dispense waarde in."
@@ -151,6 +154,18 @@ class TestSettings:
         if self.random_dispense:
             return random.randint(self.dispense_min, self.dispense_max)
         return self.dispense_amount
+
+    def next_units(self) -> list[str]:
+        """
+        The units for the next round: between one and max_units of them, drawn
+        at random from the ones ticked in the window. So max_units = 1 always
+        gives a single unit, and 6 gives anywhere from one to six.
+
+        Never more than are ticked, and never the same unit twice in a round:
+        a unit queued twice would dispense twice.
+        """
+        ceiling = min(self.max_units, len(self.units))
+        return random.sample(self.units, random.randint(1, ceiling))
 
 
 class _LoggedBoard:
@@ -380,19 +395,21 @@ class DuurTest:
             for done in range(1, total + 1):
                 self._check_stop()
 
-                unit = random.choice(settings.units)
+                units = settings.next_units()
                 amount = settings.next_amount()
-                self.message = f"Dispense {done}/{total}: {unit}, {amount} ml"
-                log.info("--- Dispense %d/%d: %s, %d ml ---", done, total, unit, amount)
+                namen = ", ".join(units)
+                self.message = f"Dispense {done}/{total}: {namen}, {amount} ml"
+                log.info("--- Dispense %d/%d: %s, %d ml per unit ---",
+                         done, total, namen, amount)
 
-                self._prepare_dispense(unit, amount)
+                self._prepare_dispense(units, amount)
                 garbled = self._start_dispense()
                 if garbled:
                     # The reply was unreadable, so the connection is out of
                     # step. Resync before asking the machine anything else.
                     self._resync()
 
-                self._wait_until_idle(unit)
+                self._wait_until_idle(namen)
 
                 self.percentage = int(done / total * 100)
 
@@ -466,29 +483,34 @@ class DuurTest:
             self.errors += 1
             log.error("%s: %s", what, name)
 
-    def _prepare_dispense(self, unit: str, amount_ml: int) -> None:
+    def _prepare_dispense(self, units: list[str], amount_ml: int) -> None:
         """
-        Correct the fill level and queue the unit for the coming dispense.
+        Correct the fill level of every unit in this round and queue them all
+        for the coming dispense. dispense_all() then sets them off together.
 
-        Both only read and adjust state, so they may be repeated safely. A
-        failure here is nearly always a garbled reply frame, such as
+        A failure here is nearly always a garbled reply frame, such as
 
             Expected encrypted string '0071;0A08;416A00265D\\n'
             to contain 4 parts, got 3
 
         which means the serial connection is out of step: bytes were lost or
         a leftover fragment was read as if it were a new frame. Reopening the
-        port starts a fresh frame and the same command then succeeds, so the
+        port starts a fresh frame and the same commands then succeed, so the
         test survives it instead of ending on the second dispense.
+
+        A round is queued again from the first unit, not continued halfway.
+        Since part of it may already be queued, and a unit queued twice would
+        dispense twice, the queue is cleared first.
         """
         for attempt in range(1, DISPENSER_RETRIES + 1):
             try:
-                self._check_result(
-                    self.machine.correct_fill_level(unit, UNITS[unit], FILL_LEVEL),
-                    f"correct_fill_level({unit})")
-                self._check_result(
-                    self.machine.dispense_nl(unit, amount_ml * NL_PER_ML),
-                    f"dispense_nl({unit}, {amount_ml} ml)")
+                for unit in units:
+                    self._check_result(
+                        self.machine.correct_fill_level(unit, UNITS[unit], FILL_LEVEL),
+                        f"correct_fill_level({unit})")
+                    self._check_result(
+                        self.machine.dispense_nl(unit, amount_ml * NL_PER_ML),
+                        f"dispense_nl({unit}, {amount_ml} ml)")
                 return
             except _Stopped:
                 raise
@@ -503,6 +525,20 @@ class DuurTest:
                 log.warning("Onleesbaar antwoord (poging %d/%d), opnieuw verbinden: %s",
                             attempt, DISPENSER_RETRIES, exc)
                 self._resync()
+                self._cancel_queue()
+
+    def _cancel_queue(self) -> None:
+        """
+        Clear whatever is queued for dispensing. Best effort: on a connection
+        that is already unhappy this may fail too, and the retry after it will
+        report that.
+        """
+        try:
+            self._check_result(self.machine.dispense_cancel(), "dispense_cancel")
+        except _Stopped:
+            raise
+        except Exception as exc:                 # noqa: BLE001 - retry reports it
+            log.warning("Wachtrij leegmaken mislukte: %s", exc)
 
     def _start_dispense(self) -> bool:
         """

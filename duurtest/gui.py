@@ -52,6 +52,11 @@ PAGE_PROGRESS = 1
 PORT_INTERVAL = 2000       # how often the COM port list is re-read
 STATUS_INTERVAL = 500      # how often the running test is polled
 
+# The window's stylesheet paints a dark blue background, which the status bar
+# and the dialogs inherit while their text stays the default black. Both are
+# given this colour instead.
+TEXT_COLOUR = "rgb(255, 255, 255)"
+
 
 class DuurtestGUI(QtCore.QObject):
     """
@@ -113,7 +118,10 @@ class DuurtestGUI(QtCore.QObject):
         # the first status poll, otherwise the central widget would shrink
         # by the height of the bar at the moment the test starts and the
         # page would visibly jump.
-        self.ui.statusBar()
+        #
+        # White text, because the window's stylesheet paints everything on a
+        # dark blue background and the default black is unreadable on it.
+        self.ui.statusBar().setStyleSheet(f"color: {TEXT_COLOUR};")
 
         # Start on the settings page with an empty progress bar.
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
@@ -140,6 +148,18 @@ class DuurtestGUI(QtCore.QObject):
     def show(self) -> None:
         """Show the window; called from main()."""
         self.ui.show()
+
+    def _dialog(self, icon: QtWidgets.QMessageBox.Icon, text: str) -> None:
+        """
+        Show a message box with readable text.
+
+        The static QMessageBox helpers would inherit the window's dark
+        stylesheet and leave the text in the default black, which is barely
+        visible on it, so the box is built here and given white text.
+        """
+        box = QtWidgets.QMessageBox(icon, "Duurtest", text, parent=self.ui)
+        box.setStyleSheet(f"QMessageBox, QLabel, QPushButton {{ color: {TEXT_COLOUR}; }}")
+        box.exec()
 
     # ------------------------------------------------------------------
     # Reading the state of the .ui
@@ -170,6 +190,7 @@ class DuurtestGUI(QtCore.QObject):
             dispense_amount=self.ui.DispenseAmount_spinBox.value(),
             dispense_min=self.ui.MinDispense_spinBox.value(),
             dispense_max=self.ui.MaxDispense_spinBox.value(),
+            max_units=self.ui.UnitCount_spinBox.value(),
         )
 
     # ------------------------------------------------------------------
@@ -271,7 +292,7 @@ class DuurtestGUI(QtCore.QObject):
         # the message, so the same rules apply when it runs without a GUI.
         error = settings.validate()
         if error:
-            QtWidgets.QMessageBox.warning(self.ui, "Instellingen", error)
+            self._dialog(QtWidgets.QMessageBox.Icon.Warning, error)
             return
 
         # start() returns immediately: the test runs in its own thread, so
@@ -324,11 +345,11 @@ class DuurtestGUI(QtCore.QObject):
         # Report the outcome. A test that was stopped by the operator gets no
         # dialog: they already know, they pressed the button.
         if test.error:
-            QtWidgets.QMessageBox.critical(self.ui, "Duurtest", test.error)
+            self._dialog(QtWidgets.QMessageBox.Icon.Critical, test.error)
         elif test.completed:
             # The driver's own message carries the tally of warnings and
             # errors the machine reported along the way.
-            QtWidgets.QMessageBox.information(self.ui, "Duurtest", test.message)
+            self._dialog(QtWidgets.QMessageBox.Icon.Information, test.message)
 
     def shutdown(self) -> None:
         """
