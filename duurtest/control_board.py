@@ -114,6 +114,8 @@ class ResultCode(enum.Enum):
     ERR_UNIT_SOL_FAULT = 0xED05
     ERR_UNIT_NO_SOL = 0xED06
     ERR_UNIT_NO_VIBR = 0xED07
+    ERR_UNIT_TOO_HOT = 0xED08
+    ERR_UNIT_TOO_COLD = 0xED0A
 
     ERR_UNIT_ADC_START_ERROR = 0xEE01
     ERR_UNIT_ADC_START_BUSY = 0xEE02
@@ -211,6 +213,8 @@ RESULT_CODE = vimbus.EnumFormat(ResultCode, {
     0xED05: 'Error: Dispenser unit solenoid fault',
     0xED06: 'Error: Dispenser unit solenoid disconnected',
     0xED07: 'Error: Dispenser unit vibration motor disconnected',
+    0xED08: 'Error: DIspenser unit too hot',
+    0xED09: 'Error: DIspenser unit too cold',
     0xEDFF: 'Error: Unknown dispenser unit error',
 
     0xEE01: 'Dispenser Unit ADC Error (Start)',
