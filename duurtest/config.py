@@ -42,7 +42,7 @@ DISPENSE_ALL_TIMEOUT = 120.0
 # disappears from the com port list altogether while it has no power, and it
 # takes Windows a moment to enumerate it again. Opening the port is therefore
 # retried until it works, or until this long has passed.
-MACHINE_CONNECT_TIMEOUT = 30.0
+MACHINE_CONNECT_TIMEOUT = 60.0
 MACHINE_CONNECT_RETRY_INTERVAL = 1.0
 
 # ----------------------------------------------------------------------
@@ -84,7 +84,7 @@ FILL_LEVEL_NL = 3_800_000_000
 # Timing of a test run
 # ----------------------------------------------------------------------
 POWER_ON_DELAY = 10.0       # after switching on, until the machine has booted
-POWER_OFF_DELAY = 5.0       # how long the power stays off during a power cycle
+POWER_OFF_DELAY = 15.0       # how long the power stays off during a power cycle
 
 # After a dispense the machine is asked for its status until it is idle again.
 MACHINE_STATUS_IDLE = "IDLE"    # the answer that means "done"
