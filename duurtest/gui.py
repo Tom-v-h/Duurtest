@@ -29,33 +29,24 @@ from PySide6 import QtCore, QtWidgets
 from PySide6.QtUiTools import QUiLoader
 from serial.tools import list_ports
 
-from .testDriver import DuurTest, TestSettings
+from .config import (
+    BAUDRATES,
+    DEFAULT_BAUDRATE,
+    PORT_REFRESH_INTERVAL_MS,
+    STATUS_REFRESH_INTERVAL_MS,
+    TEXT_COLOUR,
+)
+from .testDriver import DuurTest, TestSettings, set_machine_power
 
 # The Qt Designer file sits next to this module, so it is found no matter
 # which directory the application is started from.
 UI_FILE = Path(__file__).with_name("Duurtest_GUI.ui")
 
-# Baudrates offered in the dropdown. These are the standard values; the
-# relay firmware runs at 115200, which is why that one is preselected.
-BAUDRATES = [
-    300, 600, 1200, 2400, 4800, 9600, 14400, 19200,
-    28800, 38400, 57600, 115200, 230400, 460800, 921600,
-]
-DEFAULT_BAUDRATE = 115200
-
 # Pages of the QStackedWidget, in the order they appear in the .ui file:
-# "Main" holds the settings, "page_2" holds the progress bar.
+# "Main" holds the settings, "page_2" holds the progress bar. These follow the
+# .ui file rather than being a setting, so they stay here.
 PAGE_SETTINGS = 0
 PAGE_PROGRESS = 1
-
-# Timer intervals in milliseconds.
-PORT_INTERVAL = 2000       # how often the COM port list is re-read
-STATUS_INTERVAL = 500      # how often the running test is polled
-
-# The window's stylesheet paints a dark blue background, which the status bar
-# and the dialogs inherit while their text stays the default black. Both are
-# given this colour instead.
-TEXT_COLOUR = "rgb(255, 255, 255)"
 
 
 class DuurtestGUI(QtCore.QObject):
@@ -83,7 +74,7 @@ class DuurtestGUI(QtCore.QObject):
         # Every checkbox inside the "Unit List" group box is a dosing unit,
         # except for "Select all". Collecting them dynamically means units
         # added later in Qt Designer need no change here, as long as the
-        # object name matches an entry in testDriver.UNITS.
+        # object name matches an entry in config.UNIT_ADDRESSES.
         self.units = [cb for cb in self.ui.UnitSelect.findChildren(QtWidgets.QCheckBox)
                       if cb is not self.ui.SelectAll_checkBox]
 
@@ -98,6 +89,7 @@ class DuurtestGUI(QtCore.QObject):
         # Stop buttons; those are the names Qt Designer generated.
         self.ui.pushButton.clicked.connect(self.start_test)     # Start Test
         self.ui.pushButton_2.clicked.connect(self.stop_test)    # Stop Test
+        self.ui.MachinePower_pushButton.clicked.connect(self.toggle_machine_power)
         self.ui.SelectAll_checkBox.clicked.connect(self.select_all)
         for cb in self.units:
             cb.toggled.connect(self.update_select_all)
@@ -107,11 +99,11 @@ class DuurtestGUI(QtCore.QObject):
         # Looks for newly plugged in adapters. It is stopped while a test
         # runs, so the port list is not enumerated while the driver has one
         # of those ports open.
-        self.port_timer = QtCore.QTimer(self, interval=PORT_INTERVAL, timeout=self.refresh_ports)
+        self.port_timer = QtCore.QTimer(self, interval=PORT_REFRESH_INTERVAL_MS, timeout=self.refresh_ports)
         self.port_timer.start()
 
         # Reads the status of the running test. Only active during a test.
-        self.status_timer = QtCore.QTimer(self, interval=STATUS_INTERVAL, timeout=self.show_status)
+        self.status_timer = QtCore.QTimer(self, interval=STATUS_REFRESH_INTERVAL_MS, timeout=self.show_status)
 
         # The .ui file has no status bar, so QMainWindow creates one the
         # first time statusBar() is called. Do that here rather than during
@@ -177,11 +169,11 @@ class DuurtestGUI(QtCore.QObject):
             port=self.ui.Com_comboBox.currentData() or "",
             baudrate=self.ui.baud_comboBox.currentData(),
             # Second port: the machine's control board. Its baudrate is fixed
-            # by the protocol, so it is a constant in testDriver.py.
+            # by the protocol, so it is a constant in config.py.
             machine_port=self.ui.Machine_comboBox.currentData() or "",
             # The unit name comes from the object name (CX01_checkBox ->
             # CX01) rather than the label, because the object names are the
-            # ones guaranteed to match testDriver.UNITS.
+            # ones guaranteed to match config.UNIT_ADDRESSES.
             units=[cb.objectName().replace("_checkBox", "").replace("checkBox", "")
                    for cb in self.units if cb.isChecked()],
             dispense_number=self.ui.DispenseNumber_spinBox.value(),
@@ -232,6 +224,53 @@ class DuurtestGUI(QtCore.QObject):
             # findData() returns -1 when the previously selected port is gone;
             # fall back to the first entry in that case.
             combo.setCurrentIndex(max(0, combo.findData(current)))
+
+    def toggle_machine_power(self, on: bool) -> None:
+        """
+        Switch the machine's power from the window, so an older control board
+        shows up as a com port before you pick it. A newer board stays visible
+        whether it has power or not, and for those this is just a convenience.
+
+        The switching runs on this thread: the relay pauses a couple of
+        seconds after the port opens, so the window is briefly unresponsive
+        and shows a wait cursor. Doing it on a thread of its own would buy
+        little and cost a lot of care over who owns the relay port.
+        """
+        port = self.ui.Com_comboBox.currentData()
+        if not port:
+            self._dialog(QtWidgets.QMessageBox.Icon.Warning,
+                         "Selecteer eerst een com-port voor de relay.")
+            self.ui.MachinePower_pushButton.setChecked(not on)
+            return
+
+        self.ui.MachinePower_pushButton.setEnabled(False)
+        self.ui.statusBar().showMessage(f"Machine {'aan' if on else 'uit'} zetten...")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            set_machine_power(port, self.ui.baud_comboBox.currentData(), on)
+        except Exception as exc:                     # noqa: BLE001 - report to the operator
+            # The button goes back to what it said before, because the power
+            # did not change.
+            self.ui.MachinePower_pushButton.setChecked(not on)
+            self._dialog(QtWidgets.QMessageBox.Icon.Critical, str(exc))
+        else:
+            self.ui.statusBar().showMessage(
+                "Machine staat aan; de poort verschijnt zo in de lijst" if on
+                else "Machine staat uit")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self._update_power_button()
+
+    def _update_power_button(self) -> None:
+        """
+        Keep the button's label matching its state, and leave it alone while a
+        test runs: the driver owns the relay then and switches the power off
+        when it ends, which is what the button is reset to afterwards.
+        """
+        button = self.ui.MachinePower_pushButton
+        running = self.test is not None and self.test.running
+        button.setEnabled(not running)
+        button.setText("Machine uit" if button.isChecked() else "Machine aan")
 
     def select_all(self, checked: bool) -> None:
         """Tick or untick every unit; each one triggers update_select_all."""
@@ -304,6 +343,8 @@ class DuurtestGUI(QtCore.QObject):
         self.ui.stackedWidget.setCurrentIndex(PAGE_PROGRESS)
         self.port_timer.stop()
         self.status_timer.start()
+        # The driver owns the relay from here until the test ends.
+        self._update_power_button()
 
     def stop_test(self) -> None:
         """
@@ -341,6 +382,9 @@ class DuurtestGUI(QtCore.QObject):
         self.ui.pushButton_2.setEnabled(True)
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
         self.test = None
+        # A test always ends with the power off, so the button says so again.
+        self.ui.MachinePower_pushButton.setChecked(False)
+        self._update_power_button()
 
         # Report the outcome. A test that was stopped by the operator gets no
         # dialog: they already know, they pressed the button.

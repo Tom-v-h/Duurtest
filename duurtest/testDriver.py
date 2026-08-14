@@ -37,6 +37,29 @@ from typing import Optional
 
 import serial
 
+# Every setting lives in config.py; imported by name so the code below reads
+# the same as before.
+from .config import (
+    DISPENSE_ALL_TIMEOUT,
+    DISPENSE_STEP_ML,
+    FILL_LEVEL_NL,
+    IDLE_TIMEOUT,
+    MACHINE_ADDRESS,
+    MACHINE_BAUDRATE,
+    MACHINE_ENCRYPTION,
+    MACHINE_REPLY_TIMEOUT,
+    MACHINE_RESYNC_DELAY,
+    MACHINE_RETRY_COUNT,
+    MACHINE_STATUS_IDLE,
+    MIN_DISPENSE_ML,
+    NL_PER_ML,
+    POWER_OFF_ATTEMPTS,
+    POWER_OFF_DELAY,
+    POWER_ON_DELAY,
+    RELAY_LOCK_TIMEOUT,
+    STATUS_POLL_INTERVAL,
+    UNIT_ADDRESSES,
+)
 from .control_board import ControlBoard, ResultCode
 from .logsetup import start_run_log, stop_run_log
 from .relay import RelayController, RelayControllerConfig
@@ -44,62 +67,31 @@ from .relay import RelayController, RelayControllerConfig
 log = logging.getLogger(__name__)                       # the test itself
 machine_log = logging.getLogger("duurtest.machine")     # traffic to the control board
 
-# Unit name -> number, as the machine knows them. The names match the
-# object names of the checkboxes in Duurtest_GUI.ui.
-UNITS: dict[str, int] = {
-    'CX01': 0x0A01, 'MH01': 0x0A02, 'YH04': 0x0A03, 'RH01': 0x0A04,
-    'YX01': 0x0A05, 'WX01': 0x0A06, 'CH01': 0x0A07, 'GH01': 0x0A08,
-    'BH01': 0x0A09, 'OH01': 0x0A10, 'RX01': 0x0A11, 'YH01': 0x0A12,
-    'GX01': 0x0A13, 'BX01': 0x0A14, 'YH02': 0x0A15, 'WX02': 0x0A16,
-}
 
-# Connection to the machine's control board. The driver talks to it directly
-# over serial, using the VIMBus protocol in control_board.py; there is no
-# xmlrpc service in between any more. The port is picked in the GUI, the rest
-# is fixed by the protocol.
-MACHINE_ADDRESS = 0x0002
-MACHINE_BAUDRATE = 19200
-MACHINE_ENCRYPTION = True
-MACHINE_TIMEOUT = 5.0        # seconds to wait for a reply, so a silent board
-                             # cannot block the test thread forever
-DISPENSE_CALL_TIMEOUT = 120.0  # longer window for dispense_all, which may only
-                               # answer once the machine has picked the job up
 
-# dispense_nl() works in nanolitres while the window asks for millilitres.
-NL_PER_ML = 1_000_000
+def set_machine_power(port: str, baudrate: int, on: bool) -> None:
+    """
+    Switch the machine's power on or off outside a test.
 
-# Smallest amount the machine can dispense, and the step the amount fields in
-# the window work in. Random amounts are drawn in the same step, so a value
-# from the log can also be typed in by hand.
-MIN_DISPENSE_ML = 0.8
-DISPENSE_STEP_ML = 0.1
+    This exists for the button in the window. An older control board only
+    shows up as a com port while it has power, so you cannot pick its port
+    before switching the machine on; a newer one stays visible either way.
 
-FILL_LEVEL = 3800000000          # value passed to correct_fill_level
-POWER_ON_DELAY = 10.0      # wait after switching on until the unit has booted
-POWER_OFF_DELAY = 5.0      # how long the power stays off during a power cycle
+    The relay is opened, switched and closed again, so the port is free by
+    the time a test starts and claims it. Do not call this while a test is
+    running: the test thread owns the relay then.
+    """
+    config = RelayControllerConfig()
+    config.port = port
+    config.baudrate = baudrate
 
-# Instead of guessing how long a dispense takes, the machine is asked:
-# get_status() answers "IDLE" or "DISPENSING", and the next round starts
-# once it is idle again. The answer covers the whole machine, not one unit.
-STATUS_IDLE = "IDLE"
-STATUS_POLL_INTERVAL = 0.5   # how often the machine is asked for its status
-
-# A machine that never returns to IDLE would keep the test waiting forever.
-DISPENSE_TIMEOUT = 600.0
-
-POWER_OFF_ATTEMPTS = 3     # tries to get the relay off before giving up
-
-# Stop has to be able to cut the power even while the test thread is busy,
-# so both threads take _relay_lock before touching the relay. Commands to the
-# relay are bounded by the timeouts in relay.py, about a second, so the lock
-# is never held long; this is how long Stop waits for it.
-RELAY_LOCK_TIMEOUT = 3.0
-
-# A long dispense keeps the unit busy for a while, and the reply frame that
-# comes back afterwards is sometimes unreadable. Rather than ending the test,
-# the driver reconnects and tries the call again this many times.
-DISPENSER_RETRIES = 3
-RESYNC_DELAY = 2.0         # pause before reconnecting, lets the line go quiet
+    relay = RelayController(config)
+    log.info("Machine %s zetten via de relay op %s", "aan" if on else "uit", port)
+    relay.connect()
+    try:
+        relay.turn_on() if on else relay.turn_off()
+    finally:
+        relay.disconnect()
 
 
 @dataclass
@@ -112,7 +104,7 @@ class TestSettings:
     port: str = ""                     # COM port of the relay/STM32
     baudrate: int = 115200
     machine_port: str = ""             # COM port of the machine's control board
-    units: list[str] = field(default_factory=list)   # names from UNITS
+    units: list[str] = field(default_factory=list)   # names from UNIT_ADDRESSES
     dispense_number: int = 0           # total number of dispenses in the test
     power_cycle_interval: int = 0      # power cycle every N dispenses, 0 = off
     random_dispense: bool = False      # False = fixed amount, True = random
@@ -137,9 +129,9 @@ class TestSettings:
             return "De relay en de machine kunnen niet op dezelfde com-port zitten."
         if not self.units:
             return "Selecteer minimaal één unit."
-        # Catches a checkbox whose object name does not appear in UNITS,
+        # Catches a checkbox whose object name does not appear in UNIT_ADDRESSES,
         # which would otherwise only fail halfway through the test.
-        unknown = [u for u in self.units if u not in UNITS]
+        unknown = [u for u in self.units if u not in UNIT_ADDRESSES]
         if unknown:
             return f"Onbekende unit(s): {', '.join(unknown)}"
         if self.dispense_number <= 0:
@@ -462,7 +454,7 @@ class DuurTest:
                  port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
 
         self._machine_serial = serial.Serial(port, baudrate=MACHINE_BAUDRATE,
-                                             timeout=MACHINE_TIMEOUT)
+                                             timeout=MACHINE_REPLY_TIMEOUT)
         self.machine = _LoggedBoard(ControlBoard(MACHINE_ADDRESS, self._machine_serial,
                                                  machine_log, MACHINE_ENCRYPTION))
         self.machine.poll()
@@ -522,18 +514,18 @@ class DuurTest:
             self.machine.dispense_cancel(),
             f"dispense_cancel()")
 
-        for attempt in range(1, DISPENSER_RETRIES + 1):
+        for attempt in range(1, MACHINE_RETRY_COUNT + 1):
             try:
                 for unit, amount_ml in portions:
                     
                     self._check_result(
-                        self.machine.get_solenoid_temperature(UNITS[unit]),
+                        self.machine.get_solenoid_temperature(UNIT_ADDRESSES[unit]),
                         f"get_solenoid_temperature({unit})")
                     self._check_result(
                         self.machine.get_fill_level(unit),
                         f"get_fill_level({unit})")
                     self._check_result(
-                        self.machine.correct_fill_level(unit, UNITS[unit], FILL_LEVEL),
+                        self.machine.correct_fill_level(unit, UNIT_ADDRESSES[unit], FILL_LEVEL_NL),
                         f"correct_fill_level({unit})")
                     self._check_result(
                         self.machine.get_fill_level(unit),
@@ -548,13 +540,13 @@ class DuurTest:
             except Exception as exc:             # noqa: BLE001 - vimbus raises plain Exception
                 # Out of attempts: let it end the test, with the machine's own
                 # message so it is clear where it came from.
-                if attempt == DISPENSER_RETRIES:
+                if attempt == MACHINE_RETRY_COUNT:
                     raise
                 self.resyncs += 1
                 self.message = (f"Machine antwoordde onleesbaar, poging "
-                                f"{attempt} van {DISPENSER_RETRIES}: {exc}")
+                                f"{attempt} van {MACHINE_RETRY_COUNT}: {exc}")
                 log.warning("Onleesbaar antwoord (poging %d/%d), opnieuw verbinden: %s",
-                            attempt, DISPENSER_RETRIES, exc)
+                            attempt, MACHINE_RETRY_COUNT, exc)
                 self._resync()
                 self._cancel_queue()
 
@@ -584,7 +576,7 @@ class DuurTest:
         answer once the machine has taken the job on.
         """
         try:
-            with self.machine.board.override_timeout(DISPENSE_CALL_TIMEOUT):
+            with self.machine.board.override_timeout(DISPENSE_ALL_TIMEOUT):
                 self._check_result(self.machine.dispense_all(), "dispense_all")
             return False
         except _Stopped:
@@ -633,7 +625,7 @@ class DuurTest:
                 self._resync()
                 status = "?"
             else:
-                if status == STATUS_IDLE:
+                if status == MACHINE_STATUS_IDLE:
                     log.info("%s is klaar na %.1f s%s", unit, time.monotonic() - started,
                              "" if seen_busy else " (was al klaar bij de eerste controle)")
                     return
@@ -641,10 +633,10 @@ class DuurTest:
                     seen_busy = True
                     log.info("%s is begonnen (machinestatus %s)", unit, status)
 
-            if time.monotonic() - started > DISPENSE_TIMEOUT:
+            if time.monotonic() - started > IDLE_TIMEOUT:
                 raise TimeoutError(
-                    f"De machine staat na {DISPENSE_TIMEOUT:.0f} s nog niet op "
-                    f"{STATUS_IDLE} (laatste status: {status})"
+                    f"De machine staat na {IDLE_TIMEOUT:.0f} s nog niet op "
+                    f"{MACHINE_STATUS_IDLE} (laatste status: {status})"
                 )
 
             self.message = f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)"
@@ -656,10 +648,10 @@ class DuurTest:
         is discarded and the next command starts on a clean line.
 
         Failures are swallowed: if reopening does not work either, the next
-        attempt reports the problem, and after DISPENSER_RETRIES tries the
+        attempt reports the problem, and after MACHINE_RETRY_COUNT tries the
         test ends with the machine's own message.
         """
-        self._sleep(RESYNC_DELAY)
+        self._sleep(MACHINE_RESYNC_DELAY)
         try:
             self._close_machine()
             self._open_machine()

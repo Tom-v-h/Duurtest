@@ -35,15 +35,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Log files are written next to the application, not inside the package.
-LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+from .config import LOG_DIRECTORY, LOG_LINE_FORMAT, LOG_TIME_FORMAT
 
-# Milliseconds are worth having: a garbled reply and the command before it
-# can be only a few tens of milliseconds apart.
-LOG_FORMAT = "%(asctime)s.%(msecs)03d  %(name)-20s %(levelname)-7s %(message)s"
-DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-_formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+_formatter = logging.Formatter(LOG_LINE_FORMAT, datefmt=LOG_TIME_FORMAT)
 
 
 def setup_logging(level: int = logging.INFO, to_console: bool = True) -> None:
@@ -79,13 +73,13 @@ def start_run_log() -> tuple[Path, logging.Handler]:
     Two runs started within the same second would share a name and end up in
     one file, so a counter is added when the name is already taken.
     """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
     stamp = f"{datetime.now():%Y-%m-%d_%H-%M-%S}"
 
-    logfile = LOG_DIR / f"duurtest_{stamp}.log"
+    logfile = LOG_DIRECTORY / f"duurtest_{stamp}.log"
     counter = 2
     while logfile.exists():
-        logfile = LOG_DIR / f"duurtest_{stamp}_{counter}.log"
+        logfile = LOG_DIRECTORY / f"duurtest_{stamp}_{counter}.log"
         counter += 1
 
     handler = logging.FileHandler(logfile, encoding="utf-8")

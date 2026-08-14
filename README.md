@@ -25,6 +25,7 @@ duurtest/
 ├── gui.py               leest het venster uit en toont de status
 ├── testDriver.py        de testloop, draait in een eigen thread
 ├── relay.py             seriële communicatie met de STM32-relay
+├── config.py            alle instelbare waardes, op één plek
 ├── logsetup.py          zet de logging op
 ├── control_board.py     protocol van de machine (van de machine zelf)
 ├── vimbus.py            onderliggende VIMBus-laag (van de machine zelf)
@@ -86,6 +87,7 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Com-port relay | seriële poort van de relay/STM32 |
 | Baudrate relay | baudrate van diezelfde poort, standaard 115200 |
 | Com-port machine | seriële poort van de control board van de machine |
+| Machine aan / uit | schakelt de voeding via de relay, zonder een test te starten |
 | Number of dispenses | totaal aantal dispenses in de test |
 | Power cycle interval | na elke N dispenses gaat de spanning eraf en weer aan, 0 = uit |
 | Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max; minimaal 0,8 ml, in stappen van 0,1 |
@@ -100,10 +102,18 @@ en wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste
 wachttijd gewerkt: een kleine dispense gaat meteen door, een grote krijgt de
 tijd die hij nodig heeft.
 
+De knop **Machine aan** schakelt de voeding zonder een test te starten. Dat is
+nodig voor de oudere control boarden: die laten hun com-poort alleen zien als de
+machine spanning heeft, dus zonder die knop valt de poort niet te kiezen. Bij de
+nieuwe boarden blijft de poort altijd zichtbaar en is de knop alleen gemak.
+
 De driver praat rechtstreeks met de control board van de machine over serieel,
 via `control_board.py` en `vimbus.py`. Er zit geen xmlrpc-server meer tussen.
-Adres, baudrate en encryptie staan als constante bovenin `duurtest/testDriver.py`;
-alleen de com-poort kies je in het venster.
 
-De hoeveelheid uit het venster is in ml, terwijl `dispense_nl()` in nanoliter
-werkt. Die omrekening zit in de constante `NL_PER_ML`.
+## Instellingen aanpassen
+
+Alles wat ooit kan wijzigen staat in `duurtest/config.py`: de adressen van de
+units, de verbindingsgegevens van de control board, de hoeveelheden, alle
+wachttijden, en de opmaak van het logbestand. Waarde aanpassen, opslaan,
+applicatie opnieuw starten. Wat je per run kiest hoort in het venster, niet
+hier.
