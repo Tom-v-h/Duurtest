@@ -45,6 +45,17 @@ DISPENSE_ALL_TIMEOUT = 120.0
 MACHINE_CONNECT_TIMEOUT = 60.0
 MACHINE_CONNECT_RETRY_INTERVAL = 1.0
 
+# Now and then the control board does not come up at all after the power is
+# restored: it never appears as a com port and never will, until it is made
+# properly powerless once more. With this on, the driver does what you would do
+# by hand and switches the machine off and on again rather than ending the run.
+# That works around the behaviour, it does not cure it; if it happens often,
+# raising POWER_OFF_DELAY is the thing to try first.
+#
+# Set to False to have a run end at the first failure instead.
+RETRY_POWER_CYCLE = True
+POWER_CYCLE_ATTEMPTS = 3        # whole off-and-on-again tries before giving up
+
 # ----------------------------------------------------------------------
 # Connection to the relay (STM32) that switches the machine's power
 # ----------------------------------------------------------------------

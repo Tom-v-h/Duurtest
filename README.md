@@ -109,6 +109,13 @@ opnieuw proberen te verbinden en gaat verder zodra dat lukt; pas na 30 seconden
 geeft hij op met een foutmelding. Beide waardes staan in `config.py` als
 `MACHINE_CONNECT_TIMEOUT` en `MACHINE_CONNECT_RETRY_INTERVAL`.
 
+Soms komt de control board helemaal niet op na het inschakelen: hij verschijnt
+niet als com-poort en zal dat ook niet meer doen tot hij opnieuw spanningsloos
+is geweest. De driver doet dan wat je met de hand zou doen en zet de machine nog
+een keer uit en aan, tot `POWER_CYCLE_ATTEMPTS` keer. Zet `RETRY_POWER_CYCLE` op
+`False` om een run bij de eerste mislukking te laten stoppen. Hoe vaak dit
+gebeurde staat aan het eind van de run in het log en in de melding.
+
 De knop **Machine aan** schakelt de voeding zonder een test te starten. Dat is
 nodig voor de oudere control boarden: die laten hun com-poort alleen zien als de
 machine spanning heeft, dus zonder die knop valt de poort niet te kiezen. Bij de

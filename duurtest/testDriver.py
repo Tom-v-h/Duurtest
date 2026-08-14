@@ -56,10 +56,12 @@ from .config import (
     MACHINE_STATUS_IDLE,
     MIN_DISPENSE_ML,
     NL_PER_ML,
+    POWER_CYCLE_ATTEMPTS,
     POWER_OFF_ATTEMPTS,
     POWER_OFF_DELAY,
     POWER_ON_DELAY,
     RELAY_LOCK_TIMEOUT,
+    RETRY_POWER_CYCLE,
     STATUS_POLL_INTERVAL,
     UNIT_ADDRESSES,
 )
@@ -263,6 +265,7 @@ class DuurTest:
         self.error: Optional[str] = None    # set when the test failed
         self.resyncs = 0                    # times the machine had to be reconnected
         self.warnings = 0                   # warning codes the machine returned
+        self.power_retries = 0              # extra power cycles to get the board up
         self.errors = 0                     # error codes the machine returned
         self.logfile: Optional[Path] = None  # log file of this run
 
@@ -387,6 +390,8 @@ class DuurTest:
         ]
         if self.resyncs:
             parts.append(f"{self.resyncs}x opnieuw verbonden")
+        if self.power_retries:
+            parts.append(f"{self.power_retries}x machine opnieuw opgestart")
         return "Test afgerond: " + ", ".join(parts)
 
     def _loop(self) -> None:
@@ -742,16 +747,52 @@ class DuurTest:
     # -- helpers ----------------------------------------------------
     def _power_on(self, relay) -> None:
         """
-        Switch the power on and connect to the machine.
+        Switch the power on and connect to the machine, switching it off and
+        on again if the board does not come up.
 
         The control board loses power together with the units, so after every
-        power cycle the serial port is opened again from scratch.
+        power cycle the serial port is opened again from scratch. Now and then
+        the board does not appear at all: it never shows up as a com port and
+        never will, until it is made properly powerless once more. Rather than
+        ending a run over it, this does what the operator would do and cycles
+        the power again, up to POWER_CYCLE_ATTEMPTS times.
+
+        That is a workaround, not a cure. RETRY_POWER_CYCLE turns it off, and
+        a run then ends at the first failure.
         """
-        with self._relay_lock:
-            relay.turn_on()
-        self._sleep(POWER_ON_DELAY)
-        self._close_machine()
-        self._open_machine()
+        attempts = POWER_CYCLE_ATTEMPTS if RETRY_POWER_CYCLE else 1
+
+        for attempt in range(1, attempts + 1):
+            with self._relay_lock:
+                relay.turn_on()
+            self._sleep(POWER_ON_DELAY)
+            self._close_machine()
+
+            try:
+                self._open_machine()
+            except _Stopped:
+                raise
+            except ConnectionError as exc:
+                # Out of tries: let the message from _open_machine(), which
+                # names the ports that were visible, end the test.
+                if attempt == attempts:
+                    raise
+
+                self.power_retries += 1
+                log.warning("Machine kwam niet op na inschakelen (%s); "
+                            "machine opnieuw uit- en aanzetten, poging %d van %d",
+                            exc, attempt + 1, attempts)
+                self.message = (f"Machine kwam niet op; opnieuw opstarten "
+                                f"({attempt + 1}/{attempts})")
+
+                # Port first, then the power: see _close_machine().
+                self._close_machine()
+                self._power_off_now()
+                self._sleep(POWER_OFF_DELAY)
+            else:
+                if attempt > 1:
+                    log.info("Machine kwam op na %d keer opnieuw opstarten", attempt - 1)
+                return
 
     def _settle(self) -> None:
         """
