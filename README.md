@@ -102,6 +102,13 @@ en wacht tot die weer `IDLE` meldt. Er wordt dus niet met een vaste
 wachttijd gewerkt: een kleine dispense gaat meteen door, een grote krijgt de
 tijd die hij nodig heeft.
 
+Na een powercycle is de control board niet meteen terug: een oudere board
+verdwijnt zonder spanning helemaal uit de lijst met com-poorten en Windows heeft
+even nodig om hem opnieuw te herkennen. De driver blijft daarom elke seconde
+opnieuw proberen te verbinden en gaat verder zodra dat lukt; pas na 30 seconden
+geeft hij op met een foutmelding. Beide waardes staan in `config.py` als
+`MACHINE_CONNECT_TIMEOUT` en `MACHINE_CONNECT_RETRY_INTERVAL`.
+
 De knop **Machine aan** schakelt de voeding zonder een test te starten. Dat is
 nodig voor de oudere control boarden: die laten hun com-poort alleen zien als de
 machine spanning heeft, dus zonder die knop valt de poort niet te kiezen. Bij de

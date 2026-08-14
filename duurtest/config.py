@@ -38,6 +38,13 @@ MACHINE_REPLY_TIMEOUT = 5.0
 # one command gets a longer window than the rest.
 DISPENSE_ALL_TIMEOUT = 120.0
 
+# After a power cycle the control board needs time to come back: an older board
+# disappears from the com port list altogether while it has no power, and it
+# takes Windows a moment to enumerate it again. Opening the port is therefore
+# retried until it works, or until this long has passed.
+MACHINE_CONNECT_TIMEOUT = 30.0
+MACHINE_CONNECT_RETRY_INTERVAL = 1.0
+
 # ----------------------------------------------------------------------
 # Connection to the relay (STM32) that switches the machine's power
 # ----------------------------------------------------------------------

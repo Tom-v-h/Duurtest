@@ -46,6 +46,8 @@ from .config import (
     IDLE_TIMEOUT,
     MACHINE_ADDRESS,
     MACHINE_BAUDRATE,
+    MACHINE_CONNECT_RETRY_INTERVAL,
+    MACHINE_CONNECT_TIMEOUT,
     MACHINE_ENCRYPTION,
     MACHINE_REPLY_TIMEOUT,
     MACHINE_RESYNC_DELAY,
@@ -442,22 +444,72 @@ class DuurTest:
     # -- talking to the machine -------------------------------------
     def _open_machine(self) -> None:
         """
-        Open the serial port to the control board and greet it with a poll.
+        Open the serial port to the control board and greet it with a poll,
+        retrying until that works.
+
+        Straight after a power cycle the board is often not there yet: an older
+        one drops off the com port list entirely while it has no power, and
+        Windows needs a moment to enumerate it again. So instead of failing on
+        the first attempt, this keeps trying every
+        MACHINE_CONNECT_RETRY_INTERVAL seconds and carries on as soon as the
+        board answers. Only after MACHINE_CONNECT_TIMEOUT does it give up and
+        end the test.
+
+        The poll is part of what is retried: the port can come back before the
+        board is ready to answer, and a port that opens but says nothing is no
+        use either.
 
         The port carries a timeout, unlike the example in temp.py: without one
         a board that stops answering would leave readline() waiting for as
         long as the application runs.
         """
         port = self.settings.machine_port
-        self.message = f"Verbinden met de machine op {port}..."
         log.info("Machine: poort %s openen op %d baud, adres 0x%04X",
                  port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
 
-        self._machine_serial = serial.Serial(port, baudrate=MACHINE_BAUDRATE,
-                                             timeout=MACHINE_REPLY_TIMEOUT)
-        self.machine = _LoggedBoard(ControlBoard(MACHINE_ADDRESS, self._machine_serial,
-                                                 machine_log, MACHINE_ENCRYPTION))
-        self.machine.poll()
+        started = time.monotonic()
+        deadline = started + MACHINE_CONNECT_TIMEOUT
+        attempt = 0
+
+        while True:
+            attempt += 1
+            self._check_stop()
+            self.message = f"Verbinden met de machine op {port}..."
+            try:
+                self._machine_serial = serial.Serial(port, baudrate=MACHINE_BAUDRATE,
+                                                     timeout=MACHINE_REPLY_TIMEOUT)
+                self.machine = _LoggedBoard(ControlBoard(MACHINE_ADDRESS, self._machine_serial,
+                                                         machine_log, MACHINE_ENCRYPTION))
+                self.machine.poll()
+            except _Stopped:
+                raise
+            except Exception as exc:             # noqa: BLE001 - keep trying, then report
+                # Drop whatever half-open state there is, so the next attempt
+                # starts from nothing.
+                self._close_machine()
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ConnectionError(
+                        f"Geen verbinding met de machine op {port} na "
+                        f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempt} pogingen): {exc}"
+                    ) from exc
+
+                # The first failure is worth a line; the ones after it would
+                # only repeat themselves, so those go to debug level.
+                if attempt == 1:
+                    log.info("Machine op %s nog niet beschikbaar, blijven proberen "
+                             "(maximaal %.0f s): %s", port, MACHINE_CONNECT_TIMEOUT, exc)
+                else:
+                    log.debug("Poging %d om %s te openen mislukte: %s", attempt, port, exc)
+
+                self.message = f"Wachten op {port}... (nog {remaining:.0f} s)"
+                self._sleep(MACHINE_CONNECT_RETRY_INTERVAL)
+            else:
+                if attempt > 1:
+                    log.info("Machine op %s verbonden na %d pogingen (%.1f s)",
+                             port, attempt, time.monotonic() - started)
+                return
 
     def _close_machine(self) -> None:
         """Close the serial port to the control board. Never raises."""
