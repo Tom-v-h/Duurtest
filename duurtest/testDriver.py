@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Optional
 
 import serial
+from serial.tools import list_ports
 
 # Every setting lives in config.py; imported by name so the code below reads
 # the same as before.
@@ -69,6 +70,14 @@ from .relay import RelayController, RelayControllerConfig
 log = logging.getLogger(__name__)                       # the test itself
 machine_log = logging.getLogger("duurtest.machine")     # traffic to the control board
 
+
+
+def _visible_ports() -> str:
+    """The com ports the PC can see right now, for a failure message."""
+    try:
+        return ", ".join(p.device for p in list_ports.comports()) or "geen"
+    except Exception as exc:                     # noqa: BLE001 - only used to explain
+        return f"onbekend ({exc})"
 
 
 def set_machine_power(port: str, baudrate: int, on: bool) -> None:
@@ -428,6 +437,8 @@ class DuurTest:
                 if interval and done % interval == 0 and done < total:
                     self.message = f"Power cycle na {done} dispenses"
                     log.info("Power cycle na %d dispenses", done)
+                    # Eerst loslaten, dan pas schakelen: zie _close_machine().
+                    self._close_machine()
                     self._power_off_now()
                     self._sleep(POWER_OFF_DELAY)
                     self._power_on(self.relay)
@@ -436,10 +447,10 @@ class DuurTest:
             # are never left powered. stop() may have switched off already;
             # sending OFF twice does no harm.
             self._settle()
+            self._close_machine()
             self._power_off_now()
             with self._relay_lock:
                 self.relay.disconnect()
-            self._close_machine()
 
     # -- talking to the machine -------------------------------------
     def _open_machine(self) -> None:
@@ -492,14 +503,18 @@ class DuurTest:
                 if remaining <= 0:
                     raise ConnectionError(
                         f"Geen verbinding met de machine op {port} na "
-                        f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempt} pogingen): {exc}"
+                        f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempt} pogingen). "
+                        f"Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}"
                     ) from exc
 
                 # The first failure is worth a line; the ones after it would
-                # only repeat themselves, so those go to debug level.
+                # only repeat themselves, so those go to debug level. The list
+                # of ports says which of two things went wrong: the board is
+                # not back yet, or it is back under a different name.
                 if attempt == 1:
                     log.info("Machine op %s nog niet beschikbaar, blijven proberen "
-                             "(maximaal %.0f s): %s", port, MACHINE_CONNECT_TIMEOUT, exc)
+                             "(maximaal %.0f s). Zichtbare poorten: %s. Fout: %s",
+                             port, MACHINE_CONNECT_TIMEOUT, _visible_ports(), exc)
                 else:
                     log.debug("Poging %d om %s te openen mislukte: %s", attempt, port, exc)
 
@@ -512,13 +527,25 @@ class DuurTest:
                 return
 
     def _close_machine(self) -> None:
-        """Close the serial port to the control board. Never raises."""
+        """
+        Close the serial port to the control board. Never raises.
+
+        Call this before switching the power off, never after. Cutting the
+        mains while the port is still open makes the USB device disappear from
+        under an open handle, and Windows then keeps the port name reserved for
+        an instance that no longer exists. The board comes back but cannot have
+        its old name, so opening it fails with "cannot find the file" until the
+        handle is finally let go. Closing first avoids that race entirely.
+
+        A close that fails is logged rather than swallowed: that is exactly the
+        case that leaves a handle behind, and it should not be invisible.
+        """
         try:
             if self._machine_serial is not None and self._machine_serial.is_open:
                 self._machine_serial.close()
                 log.info("Machine: poort gesloten")
-        except Exception:                        # noqa: BLE001 - shutting down wins
-            pass
+        except Exception as exc:                 # noqa: BLE001 - shutting down wins
+            log.warning("Machine: poort sluiten mislukte, handle kan blijven hangen: %s", exc)
         self.machine = None
         self._machine_serial = None
 
