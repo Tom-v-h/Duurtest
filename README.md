@@ -116,11 +116,13 @@ een keer uit en aan, tot `POWER_CYCLE_ATTEMPTS` keer. Zet `RETRY_POWER_CYCLE` op
 `False` om een run bij de eerste mislukking te laten stoppen. Hoe vaak dit
 gebeurde staat aan het eind van de run in het log en in de melding.
 
-Voor elke dispense wordt de solenoïdetemperatuur van de unit gelezen en gelogd.
-Lukt dat niet — bijvoorbeeld omdat de firmware het commando niet kent en met een
-NACK antwoordt — dan komt dat als waarschuwing in het log en loopt de ronde
-gewoon door. Zet `READ_SOLENOID_TEMPERATURE` op `False` om de meting helemaal
-weg te laten.
+Met `READ_SOLENOID_TEMPERATURE = True` wordt voor elke ronde de
+solenoïdetemperatuur van elke unit gelezen en gelogd. Dat staat standaard uit,
+omdat niet elke control board dat commando kent: een die het niet kent antwoordt
+met een NACK (`Wrong code in command string, expected 2981, got 2`). Een
+mislukte meting komt als waarschuwing in het log, de ronde loopt door, en de
+verbinding wordt daarna opnieuw opgezet omdat een onleesbaar antwoord de
+seriële stroom uit de pas kan hebben gebracht.
 
 Na elke ronde wordt gecontroleerd hoeveel er werkelijk uit is gekomen: het
 vulniveau van elke unit wordt na afloop opnieuw gelezen en de daling vergeleken

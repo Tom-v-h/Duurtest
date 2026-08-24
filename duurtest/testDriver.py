@@ -613,10 +613,16 @@ class DuurTest:
 
         for attempt in range(1, MACHINE_RETRY_COUNT + 1):
             try:
+                # Temperatures first, while the queue is still empty. Reading
+                # one can end in a reconnect, and doing that halfway through
+                # queueing would leave the round in a state that depends on
+                # whether the machine keeps its queue across a reconnect.
+                for unit, _ in portions:
+                    self._read_solenoid_temperature(unit)
+
                 levels: dict[str, int] = {}
                 for unit, amount_ml in portions:
 
-                    self._read_solenoid_temperature(unit)
                     self._check_result(
                         self.machine.get_fill_level(unit),
                         f"get_fill_level({unit})")
@@ -663,6 +669,12 @@ class DuurTest:
         command string, expected 2981, got 2"; and get_solenoid_temperature()
         raises by itself on a reading of zero. Neither says anything about the
         dispense that follows.
+
+        The connection is reopened after a failure. A reply that could not be
+        read may have left the serial stream out of step, and every command
+        after it would then read the wrong frame. Swallowing the failure
+        without that clean-up is exactly what would turn one bad reading into
+        a connection that never recovers.
         """
         if not READ_SOLENOID_TEMPERATURE:
             return
@@ -673,7 +685,9 @@ class DuurTest:
             raise
         except Exception as exc:                 # noqa: BLE001 - only a measurement
             self.temperature_failures += 1
-            log.warning("Solenoïdetemperatuur van %s niet te lezen: %s", unit, exc)
+            log.warning("Solenoïdetemperatuur van %s niet te lezen, verbinding opnieuw "
+                        "opzetten: %s", unit, exc)
+            self._resync()
             return
 
         log.info("%s: solenoïde %.2f °C", unit, celsius)

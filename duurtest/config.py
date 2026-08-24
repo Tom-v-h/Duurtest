@@ -97,11 +97,16 @@ FILL_LEVEL_NL = 3_800_000_000
 CHECK_DISPENSED_AMOUNT = True
 
 # Read the solenoid temperature of every unit before it dispenses and put it in
-# the log. A machine whose firmware does not know the command answers with a
-# NACK, which comes back as "Wrong code in command string"; that is logged and
-# the round carries on, but if it happens every time this is the switch to
-# turn it off.
-READ_SOLENOID_TEMPERATURE = True
+# the log.
+#
+# Off by default, because not every control board knows the command: one that
+# does not answers with a NACK, which comes back as "Wrong code in command
+# string, expected 2981, got 2". A reading that fails is logged and the round
+# carries on, but the connection is reopened afterwards, since a reply that
+# could not be read may leave the serial stream out of step. On a board that
+# NACKs every time that means a reconnect per unit per round, which is why
+# this is only worth turning on where the command actually works.
+READ_SOLENOID_TEMPERATURE = False
 
 # How far the measured amount may be off before the log calls it out. A
 # deviation is only reported, it never ends the run, and the number of them is
