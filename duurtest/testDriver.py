@@ -78,9 +78,15 @@ machine_log = logging.getLogger("duurtest.machine")     # traffic to the control
 
 
 def _visible_ports() -> str:
-    """The com ports the PC can see right now, for a failure message."""
+    """
+    The com ports the PC can see right now, with their descriptions, for a
+    failure message. The description is what tells a control board apart from
+    the relay or some other adapter that happens to sit on that number.
+    """
     try:
-        return ", ".join(p.device for p in list_ports.comports()) or "geen"
+        ports = [f"{p.device} ({p.description})" if p.description else p.device
+                 for p in list_ports.comports()]
+        return ", ".join(ports) or "geen"
     except Exception as exc:                     # noqa: BLE001 - only used to explain
         return f"onbekend ({exc})"
 
@@ -501,9 +507,13 @@ class DuurTest:
             attempt += 1
             self._check_stop()
             self.message = f"Verbinden met de machine op {port}..."
+            # Which of the two steps fails says something different, so they
+            # are told apart rather than lumped into one message.
+            port_opened = False
             try:
                 self._machine_serial = serial.Serial(port, baudrate=MACHINE_BAUDRATE,
                                                      timeout=MACHINE_REPLY_TIMEOUT)
+                port_opened = True
                 self.machine = _LoggedBoard(ControlBoard(MACHINE_ADDRESS, self._machine_serial,
                                                          machine_log, MACHINE_ENCRYPTION))
                 self.machine.poll()
@@ -517,9 +527,7 @@ class DuurTest:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ConnectionError(
-                        f"Geen verbinding met de machine op {port} na "
-                        f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempt} pogingen). "
-                        f"Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}"
+                        self._connect_failure(port, attempt, port_opened, exc)
                     ) from exc
 
                 # The first failure is worth a line; the ones after it would
@@ -540,6 +548,31 @@ class DuurTest:
                     log.info("Machine op %s verbonden na %d pogingen (%.1f s)",
                              port, attempt, time.monotonic() - started)
                 return
+
+    @staticmethod
+    def _connect_failure(port: str, attempts: int, port_opened: bool, exc: Exception) -> str:
+        """
+        Put into words why the connection could not be made.
+
+        The two cases need looking at in completely different places, so they
+        get their own message. The port not opening is about the port; the
+        port opening while the board stays silent is about how we are talking
+        to it, and vimbus reports that as "Expected encrypted string '' to
+        contain 4 parts, got 1" — an empty reply, which says nothing to anyone
+        reading the log.
+        """
+        if not port_opened:
+            return (f"Kan poort {port} niet openen na "
+                    f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempts} pogingen). "
+                    f"Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}")
+
+        return (f"Poort {port} gaat open, maar de machine antwoordt niet binnen "
+                f"{MACHINE_REPLY_TIMEOUT:.0f} s ({attempts} pogingen in "
+                f"{MACHINE_CONNECT_TIMEOUT:.0f} s). Controleer of dit de poort van de "
+                f"control board is, en of baudrate ({MACHINE_BAUDRATE}), adres "
+                f"(0x{MACHINE_ADDRESS:04X}) en encryptie "
+                f"({'aan' if MACHINE_ENCRYPTION else 'uit'}) in config.py bij deze board "
+                f"horen. Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}")
 
     def _close_machine(self) -> None:
         """
