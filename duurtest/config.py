@@ -91,6 +91,16 @@ DISPENSE_STEP_ML = 0.1
 # 3_800_000_000 nl is 3.8 litre.
 FILL_LEVEL_NL = 3_800_000_000
 
+# Check what was actually dispensed: the fill level is read once more after the
+# machine reports idle, and the drop is compared with what was asked for. Costs
+# one extra command per unit per round; set to False to leave it out.
+CHECK_DISPENSED_AMOUNT = True
+
+# How far the measured amount may be off before the log calls it out. A
+# deviation is only reported, it never ends the run, and the number of them is
+# named in the closing message.
+DISPENSE_TOLERANCE_ML = 0.2
+
 # ----------------------------------------------------------------------
 # Timing of a test run
 # ----------------------------------------------------------------------

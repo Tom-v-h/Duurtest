@@ -41,8 +41,10 @@ from serial.tools import list_ports
 # Every setting lives in config.py; imported by name so the code below reads
 # the same as before.
 from .config import (
+    CHECK_DISPENSED_AMOUNT,
     DISPENSE_ALL_TIMEOUT,
     DISPENSE_STEP_ML,
+    DISPENSE_TOLERANCE_ML,
     FILL_LEVEL_NL,
     IDLE_TIMEOUT,
     MACHINE_ADDRESS,
@@ -266,6 +268,7 @@ class DuurTest:
         self.resyncs = 0                    # times the machine had to be reconnected
         self.warnings = 0                   # warning codes the machine returned
         self.power_retries = 0              # extra power cycles to get the board up
+        self.dispense_deviations = 0        # rounds where a unit dispensed the wrong amount
         self.errors = 0                     # error codes the machine returned
         self.logfile: Optional[Path] = None  # log file of this run
 
@@ -392,6 +395,8 @@ class DuurTest:
             parts.append(f"{self.resyncs}x opnieuw verbonden")
         if self.power_retries:
             parts.append(f"{self.power_retries}x machine opnieuw opgestart")
+        if self.dispense_deviations:
+            parts.append(f"{self.dispense_deviations}x afwijkende hoeveelheid")
         return "Test afgerond: " + ", ".join(parts)
 
     def _loop(self) -> None:
@@ -426,7 +431,7 @@ class DuurTest:
                 self.message = f"Dispense {done}/{total}: {namen}"
                 log.info("--- Dispense %d/%d: %s ---", done, total, namen)
 
-                self._prepare_dispense(portions)
+                levels_before = self._prepare_dispense(portions)
                 garbled = self._start_dispense()
                 if garbled:
                     # The reply was unreadable, so the connection is out of
@@ -434,6 +439,7 @@ class DuurTest:
                     self._resync()
 
                 self._wait_until_idle(namen)
+                self._check_dispensed(portions, levels_before)
 
                 self.percentage = int(done / total * 100)
 
@@ -575,10 +581,13 @@ class DuurTest:
             self.errors += 1
             log.error("%s: %s", what, name)
 
-    def _prepare_dispense(self, portions: list[tuple[str, float]]) -> None:
+    def _prepare_dispense(self, portions: list[tuple[str, float]]) -> dict[str, int]:
         """
         Correct the fill level of every unit in this round and queue them all
         with their own amount. dispense_all() then sets them off together.
+
+        Returns the fill level each unit starts from, in nanolitres, so
+        _check_dispensed() can see afterwards how much really came out.
 
         A failure here is nearly always a garbled reply frame, such as
 
@@ -600,8 +609,9 @@ class DuurTest:
 
         for attempt in range(1, MACHINE_RETRY_COUNT + 1):
             try:
+                levels: dict[str, int] = {}
                 for unit, amount_ml in portions:
-                    
+
                     self._check_result(
                         self.machine.get_solenoid_temperature(UNIT_ADDRESSES[unit]),
                         f"get_solenoid_temperature({unit})")
@@ -611,14 +621,16 @@ class DuurTest:
                     self._check_result(
                         self.machine.correct_fill_level(unit, UNIT_ADDRESSES[unit], FILL_LEVEL_NL),
                         f"correct_fill_level({unit})")
-                    self._check_result(
-                        self.machine.get_fill_level(unit),
-                        f"get_fill_level({unit})")
+                    # This second reading is the level the unit starts the
+                    # dispense from, so it is kept for the check afterwards.
+                    reading = self.machine.get_fill_level(unit)
+                    self._check_result(reading, f"get_fill_level({unit})")
+                    levels[unit] = reading.vars.get("fill_level")
                     # dispense_nl takes whole nanolitres, the window millilitres.
                     self._check_result(
                         self.machine.dispense_nl(unit, round(amount_ml * NL_PER_ML)),
                         f"dispense_nl({unit}, {amount_ml:.1f} ml)")
-                return
+                return levels
             except _Stopped:
                 raise
             except Exception as exc:             # noqa: BLE001 - vimbus raises plain Exception
@@ -633,6 +645,58 @@ class DuurTest:
                             attempt, MACHINE_RETRY_COUNT, exc)
                 self._resync()
                 self._cancel_queue()
+
+    def _check_dispensed(self, portions: list[tuple[str, float]],
+                         levels_before: dict[str, int]) -> None:
+        """
+        Read the fill level once more, now that the machine is idle, and
+        compare the drop with the amount that was asked for.
+
+        Note which two readings this uses. The pair taken in
+        _prepare_dispense() both sit before the dispense, around
+        correct_fill_level, so their difference says how far the level was off
+        before it was corrected, not how much came out. What was dispensed is
+        the level after the correction minus the level once the unit has
+        finished, which is what this measures.
+
+        A unit that is off by more than DISPENSE_TOLERANCE_ML is logged as a
+        warning and counted, but never ends the run: over a long test the
+        pattern in the log says more than any single round. Reading a level is
+        harmless, so a failure to read one only costs this one check.
+        """
+        if not CHECK_DISPENSED_AMOUNT:
+            return
+
+        for unit, amount_ml in portions:
+            start = levels_before.get(unit)
+            if start is None:
+                continue
+
+            try:
+                reading = self.machine.get_fill_level(unit)
+            except _Stopped:
+                raise
+            except Exception as exc:             # noqa: BLE001 - only a check
+                log.warning("Vulniveau van %s na de dispense niet te lezen: %s", unit, exc)
+                continue
+
+            self._check_result(reading, f"get_fill_level({unit})")
+            end = reading.vars.get("fill_level")
+            if end is None:
+                continue
+
+            dispensed_ml = (start - end) / NL_PER_ML
+            difference_ml = dispensed_ml - amount_ml
+
+            if abs(difference_ml) <= DISPENSE_TOLERANCE_ML:
+                log.info("%s: gevraagd %.2f ml, gedispenst %.2f ml (verschil %+.2f ml)",
+                         unit, amount_ml, dispensed_ml, difference_ml)
+            else:
+                self.dispense_deviations += 1
+                log.warning("%s: gevraagd %.2f ml, gedispenst %.2f ml "
+                            "(verschil %+.2f ml, buiten de tolerantie van %.2f ml)",
+                            unit, amount_ml, dispensed_ml, difference_ml,
+                            DISPENSE_TOLERANCE_ML)
 
     def _cancel_queue(self) -> None:
         """

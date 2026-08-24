@@ -116,6 +116,20 @@ een keer uit en aan, tot `POWER_CYCLE_ATTEMPTS` keer. Zet `RETRY_POWER_CYCLE` op
 `False` om een run bij de eerste mislukking te laten stoppen. Hoe vaak dit
 gebeurde staat aan het eind van de run in het log en in de melding.
 
+Na elke ronde wordt gecontroleerd hoeveel er werkelijk uit is gekomen: het
+vulniveau van elke unit wordt na afloop opnieuw gelezen en de daling vergeleken
+met wat er gevraagd was. Dat komt zo in het log:
+
+```
+CX01: gevraagd 2.40 ml, gedispenst 2.38 ml (verschil -0.02 ml)
+MH01: gevraagd 0.90 ml, gedispenst 1.65 ml (verschil +0.75 ml, buiten de tolerantie van 0.20 ml)
+```
+
+Een afwijking wordt gemeld en geteld, maar stopt de test nooit; het aantal staat
+aan het eind in de melding. `DISPENSE_TOLERANCE_ML` bepaalt wanneer iets een
+afwijking heet en met `CHECK_DISPENSED_AMOUNT = False` laat je de controle
+helemaal weg.
+
 De knop **Machine aan** schakelt de voeding zonder een test te starten. Dat is
 nodig voor de oudere control boarden: die laten hun com-poort alleen zien als de
 machine spanning heeft, dus zonder die knop valt de poort niet te kiezen. Bij de
