@@ -62,6 +62,7 @@ from .config import (
     POWER_OFF_ATTEMPTS,
     POWER_OFF_DELAY,
     POWER_ON_DELAY,
+    READ_SOLENOID_TEMPERATURE,
     RELAY_LOCK_TIMEOUT,
     RETRY_POWER_CYCLE,
     STATUS_POLL_INTERVAL,
@@ -269,6 +270,7 @@ class DuurTest:
         self.warnings = 0                   # warning codes the machine returned
         self.power_retries = 0              # extra power cycles to get the board up
         self.dispense_deviations = 0        # rounds where a unit dispensed the wrong amount
+        self.temperature_failures = 0       # solenoid readings that could not be taken
         self.errors = 0                     # error codes the machine returned
         self.logfile: Optional[Path] = None  # log file of this run
 
@@ -397,6 +399,8 @@ class DuurTest:
             parts.append(f"{self.power_retries}x machine opnieuw opgestart")
         if self.dispense_deviations:
             parts.append(f"{self.dispense_deviations}x afwijkende hoeveelheid")
+        if self.temperature_failures:
+            parts.append(f"{self.temperature_failures}x temperatuur niet gelezen")
         return "Test afgerond: " + ", ".join(parts)
 
     def _loop(self) -> None:
@@ -612,9 +616,7 @@ class DuurTest:
                 levels: dict[str, int] = {}
                 for unit, amount_ml in portions:
 
-                    self._check_result(
-                        self.machine.get_solenoid_temperature(UNIT_ADDRESSES[unit]),
-                        f"get_solenoid_temperature({unit})")
+                    self._read_solenoid_temperature(unit)
                     self._check_result(
                         self.machine.get_fill_level(unit),
                         f"get_fill_level({unit})")
@@ -645,6 +647,36 @@ class DuurTest:
                             attempt, MACHINE_RETRY_COUNT, exc)
                 self._resync()
                 self._cancel_queue()
+
+    def _read_solenoid_temperature(self, unit: str) -> None:
+        """
+        Read the solenoid temperature of a unit and put it in the log.
+
+        Never lets a round fail over it. It is a measurement, not a step of
+        the dispense, and it sits inside the retry path: a failure here used
+        to close and reopen the port, clear the queue, retry the whole round
+        three times and then end the test. One unreadable reading therefore
+        produced a burst of errors and could kill a night's run.
+
+        Two things make it fail. The machine answers with a NACK when its
+        firmware does not know the command, which comes back as "Wrong code in
+        command string, expected 2981, got 2"; and get_solenoid_temperature()
+        raises by itself on a reading of zero. Neither says anything about the
+        dispense that follows.
+        """
+        if not READ_SOLENOID_TEMPERATURE:
+            return
+
+        try:
+            celsius = self.machine.get_solenoid_temperature(UNIT_ADDRESSES[unit])
+        except _Stopped:
+            raise
+        except Exception as exc:                 # noqa: BLE001 - only a measurement
+            self.temperature_failures += 1
+            log.warning("Solenoïdetemperatuur van %s niet te lezen: %s", unit, exc)
+            return
+
+        log.info("%s: solenoïde %.2f °C", unit, celsius)
 
     def _check_dispensed(self, portions: list[tuple[str, float]],
                          levels_before: dict[str, int]) -> None:

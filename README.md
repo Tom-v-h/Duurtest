@@ -116,6 +116,12 @@ een keer uit en aan, tot `POWER_CYCLE_ATTEMPTS` keer. Zet `RETRY_POWER_CYCLE` op
 `False` om een run bij de eerste mislukking te laten stoppen. Hoe vaak dit
 gebeurde staat aan het eind van de run in het log en in de melding.
 
+Voor elke dispense wordt de solenoïdetemperatuur van de unit gelezen en gelogd.
+Lukt dat niet — bijvoorbeeld omdat de firmware het commando niet kent en met een
+NACK antwoordt — dan komt dat als waarschuwing in het log en loopt de ronde
+gewoon door. Zet `READ_SOLENOID_TEMPERATURE` op `False` om de meting helemaal
+weg te laten.
+
 Na elke ronde wordt gecontroleerd hoeveel er werkelijk uit is gekomen: het
 vulniveau van elke unit wordt na afloop opnieuw gelezen en de daling vergeleken
 met wat er gevraagd was. Dat komt zo in het log:

@@ -96,6 +96,13 @@ FILL_LEVEL_NL = 3_800_000_000
 # one extra command per unit per round; set to False to leave it out.
 CHECK_DISPENSED_AMOUNT = True
 
+# Read the solenoid temperature of every unit before it dispenses and put it in
+# the log. A machine whose firmware does not know the command answers with a
+# NACK, which comes back as "Wrong code in command string"; that is logged and
+# the round carries on, but if it happens every time this is the switch to
+# turn it off.
+READ_SOLENOID_TEMPERATURE = True
+
 # How far the measured amount may be off before the log calls it out. A
 # deviation is only reported, it never ends the run, and the number of them is
 # named in the closing message.
