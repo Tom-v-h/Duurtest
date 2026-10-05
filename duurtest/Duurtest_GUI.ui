@@ -75,9 +75,9 @@ font: 24pt &quot;MS Shell Dlg 2&quot;;</string>
       <property name="geometry">
        <rect>
         <x>530</x>
-        <y>20</y>
+        <y>10</y>
         <width>231</width>
-        <height>481</height>
+        <height>492</height>
        </rect>
       </property>
       <property name="styleSheet">
@@ -502,9 +502,9 @@ color: rgb(255,255,255);</string>
       <property name="geometry">
        <rect>
         <x>280</x>
-        <y>20</y>
+        <y>10</y>
         <width>231</width>
-        <height>380</height>
+        <height>390</height>
        </rect>
       </property>
       <property name="styleSheet">

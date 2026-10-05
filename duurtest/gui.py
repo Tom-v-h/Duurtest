@@ -121,6 +121,10 @@ class DuurtestGUI(QtCore.QObject):
         self.ui.stackedWidget.setCurrentIndex(PAGE_SETTINGS)
         self.ui.progressBar.setValue(0)
         self.update_dispense_fields()
+        # The power button's label is written here as well as in the .ui file,
+        # once for every state it can be in. Setting it at start-up too means
+        # this is the only place it comes from, so the two cannot disagree.
+        self._update_power_button()
 
     @staticmethod
     def _load_ui() -> QtWidgets.QMainWindow:
