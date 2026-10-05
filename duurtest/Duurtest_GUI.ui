@@ -460,7 +460,7 @@ font: 11pt &quot;MS Shell Dlg 2&quot;;
 color: rgb(255,255,255);</string>
        </property>
        <property name="text">
-        <string>Machine aan</string>
+        <string>Machine on</string>
        </property>
        <property name="checkable">
         <bool>true</bool>

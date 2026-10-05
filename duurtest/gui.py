@@ -12,9 +12,8 @@ layers only depend downwards:
 
     Duurtest_GUI.ui  <->  gui.py  <->  testDriver.py  <->  relay.py
 
-Note on language: comments and docstrings are English, but text the operator
-sees (dialogs, status bar messages) is Dutch, matching the labels in the
-.ui file.
+Everything is in English: the comments, and the text the operator sees in
+the dialogs and the status bar, matching the labels in the .ui file.
 
 The application is started through main.py in the directory above:
     python main.py
@@ -33,13 +32,16 @@ from .config import (
     BAUDRATES,
     DEFAULT_BAUDRATE,
     PORT_REFRESH_INTERVAL_MS,
+    RESOURCE_DIRECTORY,
     STATUS_REFRESH_INTERVAL_MS,
     TEXT_COLOUR,
 )
 from .testDriver import DuurTest, TestSettings, set_machine_power
 
 # The Qt Designer file sits next to this module, so it is found no matter
-# which directory the application is started from.
+# which directory the application is started from. This also holds in a .exe
+# built with PyInstaller, as long as the .ui file is bundled into the
+# duurtest folder: __file__ then points into the unpacked bundle.
 UI_FILE = Path(__file__).with_name("Duurtest_GUI.ui")
 
 # Pages of the QStackedWidget, in the order they appear in the .ui file:
@@ -130,9 +132,16 @@ class DuurtestGUI(QtCore.QObject):
         """
         file = QtCore.QFile(str(UI_FILE))
         if not file.open(QtCore.QIODevice.OpenModeFlag.ReadOnly):
-            raise RuntimeError(f"Kan {UI_FILE} niet openen: {file.errorString()}")
+            raise RuntimeError(f"Cannot open {UI_FILE}: {file.errorString()}")
         try:
-            return QUiLoader().load(file)
+            loader = QUiLoader()
+            # The .ui file names the logo as "VDl_logo.png", a relative path,
+            # which Qt otherwise looks for in the directory the application was
+            # started from. Saying where the file actually is means the logo
+            # appears whatever that directory happens to be, and in a build it
+            # is found inside the bundle.
+            loader.setWorkingDirectory(QtCore.QDir(str(RESOURCE_DIRECTORY)))
+            return loader.load(file)
         finally:
             # Close the file even if loading raises, so no handle is leaked.
             file.close()
@@ -149,7 +158,7 @@ class DuurtestGUI(QtCore.QObject):
         stylesheet and leave the text in the default black, which is barely
         visible on it, so the box is built here and given white text.
         """
-        box = QtWidgets.QMessageBox(icon, "Duurtest", text, parent=self.ui)
+        box = QtWidgets.QMessageBox(icon, "Endurance test", text, parent=self.ui)
         box.setStyleSheet(f"QMessageBox, QLabel, QPushButton {{ color: {TEXT_COLOUR}; }}")
         box.exec()
 
@@ -219,7 +228,7 @@ class DuurtestGUI(QtCore.QObject):
             if not ports:
                 # Keep the dropdown non-empty so it does not look broken. The
                 # data is None, which fails validation when Start is pressed.
-                combo.addItem("Geen poort gevonden", None)
+                combo.addItem("No port found", None)
 
             # findData() returns -1 when the previously selected port is gone;
             # fall back to the first entry in that case.
@@ -239,12 +248,12 @@ class DuurtestGUI(QtCore.QObject):
         port = self.ui.Com_comboBox.currentData()
         if not port:
             self._dialog(QtWidgets.QMessageBox.Icon.Warning,
-                         "Selecteer eerst een com-port voor de relay.")
+                         "Select a com port for the relay first.")
             self.ui.MachinePower_pushButton.setChecked(not on)
             return
 
         self.ui.MachinePower_pushButton.setEnabled(False)
-        self.ui.statusBar().showMessage(f"Machine {'aan' if on else 'uit'} zetten...")
+        self.ui.statusBar().showMessage(f"Switching the machine {'on' if on else 'off'}...")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
             set_machine_power(port, self.ui.baud_comboBox.currentData(), on)
@@ -255,8 +264,8 @@ class DuurtestGUI(QtCore.QObject):
             self._dialog(QtWidgets.QMessageBox.Icon.Critical, str(exc))
         else:
             self.ui.statusBar().showMessage(
-                "Machine staat aan; de poort verschijnt zo in de lijst" if on
-                else "Machine staat uit")
+                "Machine is on; its port will appear in the list shortly" if on
+                else "Machine is off")
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
             self._update_power_button()
@@ -270,7 +279,7 @@ class DuurtestGUI(QtCore.QObject):
         button = self.ui.MachinePower_pushButton
         running = self.test is not None and self.test.running
         button.setEnabled(not running)
-        button.setText("Machine uit" if button.isChecked() else "Machine aan")
+        button.setText("Machine off" if button.isChecked() else "Machine on")
 
     def select_all(self, checked: bool) -> None:
         """Tick or untick every unit; each one triggers update_select_all."""

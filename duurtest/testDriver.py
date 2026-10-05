@@ -86,9 +86,9 @@ def _visible_ports() -> str:
     try:
         ports = [f"{p.device} ({p.description})" if p.description else p.device
                  for p in list_ports.comports()]
-        return ", ".join(ports) or "geen"
+        return ", ".join(ports) or "none"
     except Exception as exc:                     # noqa: BLE001 - only used to explain
-        return f"onbekend ({exc})"
+        return f"unknown ({exc})"
 
 
 def set_machine_power(port: str, baudrate: int, on: bool) -> None:
@@ -108,7 +108,7 @@ def set_machine_power(port: str, baudrate: int, on: bool) -> None:
     config.baudrate = baudrate
 
     relay = RelayController(config)
-    log.info("Machine %s zetten via de relay op %s", "aan" if on else "uit", port)
+    log.info("Switching the machine %s with the relay on %s", "on" if on else "off", port)
     relay.connect()
     try:
         relay.turn_on() if on else relay.turn_off()
@@ -140,33 +140,32 @@ class TestSettings:
         Check the settings before a test is started.
 
         Returns a message describing the first problem found, or None when
-        everything is in order. The message is shown as-is by the GUI, which
-        is why it is Dutch.
+        everything is in order. The message is shown as-is by the GUI.
         """
         if not self.port:
-            return "Selecteer een com-port voor de relay."
+            return "Select a com port for the relay."
         if not self.machine_port:
-            return "Selecteer een com-port voor de machine."
+            return "Select a com port for the machine."
         if self.machine_port == self.port:
-            return "De relay en de machine kunnen niet op dezelfde com-port zitten."
+            return "The relay and the machine cannot be on the same com port."
         if not self.units:
-            return "Selecteer minimaal één unit."
+            return "Select at least one unit."
         # Catches a checkbox whose object name does not appear in UNIT_ADDRESSES,
         # which would otherwise only fail halfway through the test.
         unknown = [u for u in self.units if u not in UNIT_ADDRESSES]
         if unknown:
-            return f"Onbekende unit(s): {', '.join(unknown)}"
+            return f"Unknown unit(s): {', '.join(unknown)}"
         if self.dispense_number <= 0:
-            return "Aantal dispenses moet groter zijn dan 0."
+            return "Number of dispenses has to be greater than 0."
         if self.max_units < 1:
-            return "Max units per dispense moet minimaal 1 zijn."
+            return "Max units per dispense has to be at least 1."
         if self.random_dispense:
             if self.dispense_min < MIN_DISPENSE_ML:
-                return f"Min dispense moet minimaal {MIN_DISPENSE_ML} ml zijn."
+                return f"Min dispense has to be at least {MIN_DISPENSE_ML} ml."
             if self.dispense_min > self.dispense_max:
-                return "Min dispense mag niet groter zijn dan max."
+                return "Min dispense cannot be greater than max."
         elif self.dispense_amount < MIN_DISPENSE_ML:
-            return f"Dispense hoeveelheid moet minimaal {MIN_DISPENSE_ML} ml zijn."
+            return f"Dispense amount has to be at least {MIN_DISPENSE_ML} ml."
         return None
 
     def next_amount(self) -> float:
@@ -211,7 +210,7 @@ class _LoggedBoard:
     # Waiting for a dispense asks the machine for its status twice a second,
     # which would bury everything else: a dispense of a hundred seconds is four
     # hundred lines saying the same thing. Those go to debug level, so the file
-    # keeps the story ("CX01 is begonnen", "CX01 is klaar na 98.5 s") while
+    # keeps the story ("CX01 has started", "CX01 finished after 98.5 s") while
     # every single exchange is still there when logging runs at DEBUG.
     # Failures are always logged, however often the command is sent.
     QUIET_CALLS = {"get_status"}
@@ -230,7 +229,7 @@ class _LoggedBoard:
             try:
                 result = method(*args, **kwargs)
             except Exception as exc:                 # noqa: BLE001 - log, then pass on
-                machine_log.error("RX  %s mislukt na %.0f ms: %s",
+                machine_log.error("RX  %s failed after %.0f ms: %s",
                                   name, (time.time() - started) * 1000, exc)
                 raise
             # A Command carries its decoded variables; show those rather than
@@ -302,7 +301,7 @@ class DuurTest:
         """
         error = self.settings.validate()
         if error:
-            log.error("Test niet gestart: %s", error)
+            log.error("Test not started: %s", error)
             raise ValueError(error)
 
         # The log file of this run, opened before the first line is written
@@ -311,16 +310,16 @@ class DuurTest:
 
         s = self.settings
         log.info("=" * 70)
-        log.info("Test gestart: %d dispenses over %d units", s.dispense_number, len(s.units))
+        log.info("Test started: %d dispenses over %d units", s.dispense_number, len(s.units))
         log.info("  relay      : %s @ %s baud", s.port, s.baudrate)
-        log.info("  machine    : %s @ %s baud, adres 0x%04X",
+        log.info("  machine    : %s @ %s baud, address 0x%04X",
                  s.machine_port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
         log.info("  units      : %s", ", ".join(s.units))
-        log.info("  hoeveelheid: %s",
+        log.info("  amount     : %s",
                  f"{s.dispense_min:.1f}-{s.dispense_max:.1f} ml random per unit"
-                 if s.random_dispense else f"{s.dispense_amount:.1f} ml vast")
-        log.info("  powercycle : %s",
-                 f"elke {s.power_cycle_interval} dispenses" if s.power_cycle_interval else "uit")
+                 if s.random_dispense else f"{s.dispense_amount:.1f} ml fixed")
+        log.info("  power cycle: %s",
+                 f"every {s.power_cycle_interval} dispenses" if s.power_cycle_interval else "off")
 
         self.running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -344,13 +343,13 @@ class DuurTest:
         relay.py. Closing the port is still left to the test thread, which
         owns it.
         """
-        log.info("Stop ingedrukt")
+        log.info("Stop pressed")
         self._stop = True
         if not self._power_off_now():
             # The test thread is holding the relay; its own shutdown will
             # switch off in a moment.
-            log.warning("Relay was bezig, uitschakelen wordt door de testthread gedaan")
-            self.message = "Stoppen, relay is bezig..."
+            log.warning("Relay was busy, the test thread will switch the power off")
+            self.message = "Stopping, the relay is busy..."
 
     def wait(self, timeout: Optional[float] = None) -> None:
         """Block until the test thread has ended, or until timeout seconds."""
@@ -372,16 +371,16 @@ class DuurTest:
             self.message = self._summary()
             log.info(self.message)
         except _Stopped:
-            self.message = "Test gestopt"
-            log.info("Test gestopt door de gebruiker bij %d%%", self.percentage)
+            self.message = "Test stopped"
+            log.info("Test stopped by the operator at %d%%", self.percentage)
         except Exception as exc:                 # noqa: BLE001 - report to the GUI
             self.error = str(exc)
-            self.message = f"Fout: {exc}"
+            self.message = f"Error: {exc}"
             # exc_info puts the traceback in the file, which says a lot more
             # than the one line the GUI shows.
-            log.exception("Test afgebroken door een fout: %s", exc)
+            log.exception("Test aborted by an error: %s", exc)
         finally:
-            log.info("Log van deze run: %s", self.logfile)
+            log.info("Log of this run: %s", self.logfile)
             # Close this run's file before running is cleared, so the file is
             # complete by the time the GUI reports the test as finished.
             stop_run_log(self._log_handler)
@@ -396,18 +395,18 @@ class DuurTest:
         the machine reported along the way.
         """
         parts = [
-            f"{self.warnings} waarschuwing" + ("en" if self.warnings != 1 else ""),
-            f"{self.errors} fout" + ("en" if self.errors != 1 else ""),
+            f"{self.warnings} warning" + ("s" if self.warnings != 1 else ""),
+            f"{self.errors} error" + ("s" if self.errors != 1 else ""),
         ]
         if self.resyncs:
-            parts.append(f"{self.resyncs}x opnieuw verbonden")
+            parts.append(f"{self.resyncs}x reconnected")
         if self.power_retries:
-            parts.append(f"{self.power_retries}x machine opnieuw opgestart")
+            parts.append(f"{self.power_retries}x machine restarted")
         if self.dispense_deviations:
-            parts.append(f"{self.dispense_deviations}x afwijkende hoeveelheid")
+            parts.append(f"{self.dispense_deviations}x amount out of tolerance")
         if self.temperature_failures:
-            parts.append(f"{self.temperature_failures}x temperatuur niet gelezen")
-        return "Test afgerond: " + ", ".join(parts)
+            parts.append(f"{self.temperature_failures}x temperature not read")
+        return "Test finished: " + ", ".join(parts)
 
     def _loop(self) -> None:
         """The test itself: connect, dispense, power cycle, disconnect."""
@@ -423,7 +422,7 @@ class DuurTest:
         config.baudrate = settings.baudrate
         self.relay = RelayController(config)
 
-        self.message = f"Verbinden met relay op {settings.port}..."
+        self.message = f"Connecting to the relay on {settings.port}..."
         with self._relay_lock:
             self.relay.connect()
 
@@ -437,9 +436,9 @@ class DuurTest:
                 # mode they do not all dispense the same thing.
                 portions = [(unit, settings.next_amount())
                             for unit in settings.next_units()]
-                namen = ", ".join(f"{unit} {ml:.1f} ml" for unit, ml in portions)
-                self.message = f"Dispense {done}/{total}: {namen}"
-                log.info("--- Dispense %d/%d: %s ---", done, total, namen)
+                names = ", ".join(f"{unit} {ml:.1f} ml" for unit, ml in portions)
+                self.message = f"Dispense {done}/{total}: {names}"
+                log.info("--- Dispense %d/%d: %s ---", done, total, names)
 
                 levels_before = self._prepare_dispense(portions)
                 garbled = self._start_dispense()
@@ -448,7 +447,7 @@ class DuurTest:
                     # step. Resync before asking the machine anything else.
                     self._resync()
 
-                self._wait_until_idle(namen)
+                self._wait_until_idle(names)
                 self._check_dispensed(portions, levels_before)
 
                 self.percentage = int(done / total * 100)
@@ -456,9 +455,9 @@ class DuurTest:
                 # Power cycle in between, but not after the last dispense:
                 # the finally block switches the power off anyway.
                 if interval and done % interval == 0 and done < total:
-                    self.message = f"Power cycle na {done} dispenses"
-                    log.info("Power cycle na %d dispenses", done)
-                    # Eerst loslaten, dan pas schakelen: zie _close_machine().
+                    self.message = f"Power cycle after {done} dispenses"
+                    log.info("Power cycle after %d dispenses", done)
+                    # Let the port go before switching: see _close_machine().
                     self._close_machine()
                     self._power_off_now()
                     self._sleep(POWER_OFF_DELAY)
@@ -496,7 +495,7 @@ class DuurTest:
         long as the application runs.
         """
         port = self.settings.machine_port
-        log.info("Machine: poort %s openen op %d baud, adres 0x%04X",
+        log.info("Machine: opening port %s at %d baud, address 0x%04X",
                  port, MACHINE_BAUDRATE, MACHINE_ADDRESS)
 
         started = time.monotonic()
@@ -506,7 +505,7 @@ class DuurTest:
         while True:
             attempt += 1
             self._check_stop()
-            self.message = f"Verbinden met de machine op {port}..."
+            self.message = f"Connecting to the machine on {port}..."
             # Which of the two steps fails says something different, so they
             # are told apart rather than lumped into one message.
             port_opened = False
@@ -535,17 +534,17 @@ class DuurTest:
                 # of ports says which of two things went wrong: the board is
                 # not back yet, or it is back under a different name.
                 if attempt == 1:
-                    log.info("Machine op %s nog niet beschikbaar, blijven proberen "
-                             "(maximaal %.0f s). Zichtbare poorten: %s. Fout: %s",
+                    log.info("Machine on %s not available yet, keep trying "
+                             "(at most %.0f s). Visible ports: %s. Error: %s",
                              port, MACHINE_CONNECT_TIMEOUT, _visible_ports(), exc)
                 else:
-                    log.debug("Poging %d om %s te openen mislukte: %s", attempt, port, exc)
+                    log.debug("Attempt %d to open %s failed: %s", attempt, port, exc)
 
-                self.message = f"Wachten op {port}... (nog {remaining:.0f} s)"
+                self.message = f"Waiting for {port}... ({remaining:.0f} s left)"
                 self._sleep(MACHINE_CONNECT_RETRY_INTERVAL)
             else:
                 if attempt > 1:
-                    log.info("Machine op %s verbonden na %d pogingen (%.1f s)",
+                    log.info("Machine on %s connected after %d attempts (%.1f s)",
                              port, attempt, time.monotonic() - started)
                 return
 
@@ -562,17 +561,17 @@ class DuurTest:
         reading the log.
         """
         if not port_opened:
-            return (f"Kan poort {port} niet openen na "
-                    f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempts} pogingen). "
-                    f"Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}")
+            return (f"Cannot open port {port} after "
+                    f"{MACHINE_CONNECT_TIMEOUT:.0f} s ({attempts} attempts). "
+                    f"Visible ports: {_visible_ports()}. Last error: {exc}")
 
-        return (f"Poort {port} gaat open, maar de machine antwoordt niet binnen "
-                f"{MACHINE_REPLY_TIMEOUT:.0f} s ({attempts} pogingen in "
-                f"{MACHINE_CONNECT_TIMEOUT:.0f} s). Controleer of dit de poort van de "
-                f"control board is, en of baudrate ({MACHINE_BAUDRATE}), adres "
-                f"(0x{MACHINE_ADDRESS:04X}) en encryptie "
-                f"({'aan' if MACHINE_ENCRYPTION else 'uit'}) in config.py bij deze board "
-                f"horen. Zichtbare poorten: {_visible_ports()}. Laatste fout: {exc}")
+        return (f"Port {port} opens, but the machine does not answer within "
+                f"{MACHINE_REPLY_TIMEOUT:.0f} s ({attempts} attempts in "
+                f"{MACHINE_CONNECT_TIMEOUT:.0f} s). Check that this is the control "
+                f"board's port, and that the baudrate ({MACHINE_BAUDRATE}), address "
+                f"(0x{MACHINE_ADDRESS:04X}) and encryption "
+                f"({'on' if MACHINE_ENCRYPTION else 'off'}) in config.py match this "
+                f"board. Visible ports: {_visible_ports()}. Last error: {exc}")
 
     def _close_machine(self) -> None:
         """
@@ -591,9 +590,9 @@ class DuurTest:
         try:
             if self._machine_serial is not None and self._machine_serial.is_open:
                 self._machine_serial.close()
-                log.info("Machine: poort gesloten")
+                log.info("Machine: port closed")
         except Exception as exc:                 # noqa: BLE001 - shutting down wins
-            log.warning("Machine: poort sluiten mislukte, handle kan blijven hangen: %s", exc)
+            log.warning("Machine: closing the port failed, a handle may be left behind: %s", exc)
         self.machine = None
         self._machine_serial = None
 
@@ -680,9 +679,9 @@ class DuurTest:
                 if attempt == MACHINE_RETRY_COUNT:
                     raise
                 self.resyncs += 1
-                self.message = (f"Machine antwoordde onleesbaar, poging "
-                                f"{attempt} van {MACHINE_RETRY_COUNT}: {exc}")
-                log.warning("Onleesbaar antwoord (poging %d/%d), opnieuw verbinden: %s",
+                self.message = (f"The machine's reply was unreadable, attempt "
+                                f"{attempt} of {MACHINE_RETRY_COUNT}: {exc}")
+                log.warning("Unreadable reply (attempt %d/%d), reconnecting: %s",
                             attempt, MACHINE_RETRY_COUNT, exc)
                 self._resync()
                 self._cancel_queue()
@@ -718,12 +717,12 @@ class DuurTest:
             raise
         except Exception as exc:                 # noqa: BLE001 - only a measurement
             self.temperature_failures += 1
-            log.warning("Solenoïdetemperatuur van %s niet te lezen, verbinding opnieuw "
-                        "opzetten: %s", unit, exc)
+            log.warning("Could not read the solenoid temperature of %s, "
+                        "reconnecting: %s", unit, exc)
             self._resync()
             return
 
-        log.info("%s: solenoïde %.2f °C", unit, celsius)
+        log.info("%s: solenoid %.2f °C", unit, celsius)
 
     def _check_dispensed(self, portions: list[tuple[str, float]],
                          levels_before: dict[str, int]) -> None:
@@ -756,7 +755,8 @@ class DuurTest:
             except _Stopped:
                 raise
             except Exception as exc:             # noqa: BLE001 - only a check
-                log.warning("Vulniveau van %s na de dispense niet te lezen: %s", unit, exc)
+                log.warning("Could not read the fill level of %s after the dispense: %s",
+                            unit, exc)
                 continue
 
             self._check_result(reading, f"get_fill_level({unit})")
@@ -768,12 +768,12 @@ class DuurTest:
             difference_ml = dispensed_ml - amount_ml
 
             if abs(difference_ml) <= DISPENSE_TOLERANCE_ML:
-                log.info("%s: gevraagd %.2f ml, gedispenst %.2f ml (verschil %+.2f ml)",
+                log.info("%s: asked for %.2f ml, dispensed %.2f ml (difference %+.2f ml)",
                          unit, amount_ml, dispensed_ml, difference_ml)
             else:
                 self.dispense_deviations += 1
-                log.warning("%s: gevraagd %.2f ml, gedispenst %.2f ml "
-                            "(verschil %+.2f ml, buiten de tolerantie van %.2f ml)",
+                log.warning("%s: asked for %.2f ml, dispensed %.2f ml "
+                            "(difference %+.2f ml, outside the tolerance of %.2f ml)",
                             unit, amount_ml, dispensed_ml, difference_ml,
                             DISPENSE_TOLERANCE_ML)
 
@@ -788,7 +788,7 @@ class DuurTest:
         except _Stopped:
             raise
         except Exception as exc:                 # noqa: BLE001 - retry reports it
-            log.warning("Wachtrij leegmaken mislukte: %s", exc)
+            log.warning("Clearing the queue failed: %s", exc)
 
     def _start_dispense(self) -> bool:
         """
@@ -810,9 +810,9 @@ class DuurTest:
             raise
         except Exception as exc:                 # noqa: BLE001 - vimbus raises plain Exception
             self.resyncs += 1
-            self.message = (f"Antwoord op de dispense was onleesbaar ({exc}); "
-                            f"niet herhaald, de machine kan al bezig zijn")
-            log.warning("Antwoord op dispense_all onleesbaar, NIET herhaald: %s", exc)
+            self.message = (f"The reply to the dispense was unreadable ({exc}); "
+                            f"not repeated, the machine may already be running")
+            log.warning("Reply to dispense_all unreadable, NOT repeated: %s", exc)
             return True
 
     def _wait_until_idle(self, unit: str) -> None:
@@ -848,25 +848,25 @@ class DuurTest:
             except Exception as exc:             # noqa: BLE001 - vimbus raises plain Exception
                 # Unreadable answer; resync and ask again on the next poll.
                 self.resyncs += 1
-                log.warning("Onleesbaar antwoord op get_status(), opnieuw verbinden: %s", exc)
+                log.warning("Unreadable reply to get_status(), reconnecting: %s", exc)
                 self._resync()
                 status = "?"
             else:
                 if status == MACHINE_STATUS_IDLE:
-                    log.info("%s is klaar na %.1f s%s", unit, time.monotonic() - started,
-                             "" if seen_busy else " (was al klaar bij de eerste controle)")
+                    log.info("%s finished after %.1f s%s", unit, time.monotonic() - started,
+                             "" if seen_busy else " (was already done at the first check)")
                     return
                 elif not seen_busy:
                     seen_busy = True
-                    log.info("%s is begonnen (machinestatus %s)", unit, status)
+                    log.info("%s has started (machine status %s)", unit, status)
 
             if time.monotonic() - started > IDLE_TIMEOUT:
                 raise TimeoutError(
-                    f"De machine staat na {IDLE_TIMEOUT:.0f} s nog niet op "
-                    f"{MACHINE_STATUS_IDLE} (laatste status: {status})"
+                    f"After {IDLE_TIMEOUT:.0f} s the machine still does not report "
+                    f"{MACHINE_STATUS_IDLE} (last status: {status})"
                 )
 
-            self.message = f"Wachten op {unit}... ({time.monotonic() - started:.0f} s)"
+            self.message = f"Waiting for {unit}... ({time.monotonic() - started:.0f} s)"
             self._sleep(STATUS_POLL_INTERVAL)
 
     def _resync(self) -> None:
@@ -885,7 +885,7 @@ class DuurTest:
         except _Stopped:
             raise
         except Exception as exc:                 # noqa: BLE001 - next attempt reports it
-            log.warning("Opnieuw verbinden met de machine mislukte: %s", exc)
+            log.warning("Reconnecting to the machine failed: %s", exc)
 
     # -- helpers ----------------------------------------------------
     def _power_on(self, relay) -> None:
@@ -922,10 +922,10 @@ class DuurTest:
                     raise
 
                 self.power_retries += 1
-                log.warning("Machine kwam niet op na inschakelen (%s); "
-                            "machine opnieuw uit- en aanzetten, poging %d van %d",
+                log.warning("The machine did not come up after switching on (%s); "
+                            "switching it off and on again, attempt %d of %d",
                             exc, attempt + 1, attempts)
-                self.message = (f"Machine kwam niet op; opnieuw opstarten "
+                self.message = (f"The machine did not come up; restarting it "
                                 f"({attempt + 1}/{attempts})")
 
                 # Port first, then the power: see _close_machine().
@@ -934,7 +934,7 @@ class DuurTest:
                 self._sleep(POWER_OFF_DELAY)
             else:
                 if attempt > 1:
-                    log.info("Machine kwam op na %d keer opnieuw opstarten", attempt - 1)
+                    log.info("The machine came up after %d restart(s)", attempt - 1)
                 return
 
     def _settle(self) -> None:
@@ -954,7 +954,7 @@ class DuurTest:
         _wait_until_idle() here, at the cost of a Stop that takes as long as
         the dispense still needs.
         """
-        self.message = "Spanning gaat eraf..."
+        self.message = "Switching the power off..."
         time.sleep(POWER_OFF_DELAY)
 
     def _power_off_now(self) -> bool:

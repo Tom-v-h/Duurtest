@@ -58,7 +58,7 @@ class PowerTest(QtWidgets.QWidget):
         self.setWindowTitle("Power test")
         self.status = QtWidgets.QLabel()
         self.stop_button = QtWidgets.QPushButton("Stop")
-        self.manual_button = QtWidgets.QPushButton("Handmatig aan")
+        self.manual_button = QtWidgets.QPushButton("Manual on")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(self.status)
@@ -79,12 +79,12 @@ class PowerTest(QtWidgets.QWidget):
             answer = self.relay.turn_on() if on else self.relay.turn_off()
         except Exception as exc:                 # noqa: BLE001 - report and stop
             self.stop_cycling()
-            self.show_status(f"Schakelen mislukte: {exc}")
+            self.show_status(f"Switching failed: {exc}")
             return
 
         self.relay_on = on
-        print(f"{stamp()}  {'ON ' if on else 'OFF'}  ->  {answer or '<geen antwoord>'}")
-        self.manual_button.setText("Handmatig uit" if on else "Handmatig aan")
+        print(f"{stamp()}  {'ON ' if on else 'OFF'}  ->  {answer or '<no answer>'}")
+        self.manual_button.setText("Manual off" if on else "Manual on")
 
     # -- the cycle --------------------------------------------------
     def start_cycling(self) -> None:
@@ -101,14 +101,14 @@ class PowerTest(QtWidgets.QWidget):
             self.switch(False)
             if self.cycle >= CYCLES:
                 self.cycling = False
-                self.show_status(f"Klaar: {CYCLES} cycles gedaan, relay uit")
+                self.show_status(f"Done: {CYCLES} cycles, relay off")
                 return
-            self.show_status(f"Cycle {self.cycle}/{CYCLES}: uit")
+            self.show_status(f"Cycle {self.cycle}/{CYCLES}: off")
             self.timer.start(int(OFF_SECONDS * 1000))
         else:
             self.cycle += 1
             self.switch(True)
-            self.show_status(f"Cycle {self.cycle}/{CYCLES}: aan")
+            self.show_status(f"Cycle {self.cycle}/{CYCLES}: on")
             self.timer.start(int(ON_SECONDS * 1000))
 
     def stop_cycling(self) -> None:
@@ -119,7 +119,7 @@ class PowerTest(QtWidgets.QWidget):
         if self.relay_on:
             self.switch(False)
         if was_running:
-            self.show_status(f"Gestopt na {self.cycle} cycles, relay uit")
+            self.show_status(f"Stopped after {self.cycle} cycles, relay off")
 
     # -- by hand ----------------------------------------------------
     def switch_by_hand(self) -> None:
@@ -130,7 +130,7 @@ class PowerTest(QtWidgets.QWidget):
         if self.cycling:
             self.stop_cycling()
         self.switch(not self.relay_on)
-        self.show_status("Handmatig: relay " + ("aan" if self.relay_on else "uit"))
+        self.show_status("Manual: relay " + ("on" if self.relay_on else "off"))
 
     # -- the rest ---------------------------------------------------
     def show_status(self, text: str) -> None:
@@ -154,8 +154,8 @@ def main() -> int:
     config.baudrate = RELAY_BAUDRATE
     relay = RelayController(config)
 
-    print(f"{stamp()}  Relay op {RELAY_PORT} @ {RELAY_BAUDRATE} baud, "
-          f"{CYCLES} cycles van {ON_SECONDS:.0f} s aan en {OFF_SECONDS:.0f} s uit")
+    print(f"{stamp()}  Relay on {RELAY_PORT} @ {RELAY_BAUDRATE} baud, "
+          f"{CYCLES} cycles of {ON_SECONDS:.0f} s on and {OFF_SECONDS:.0f} s off")
     try:
         relay.connect()
     except Exception as exc:                     # noqa: BLE001 - nothing to run without
@@ -169,7 +169,7 @@ def main() -> int:
         return app.exec()
     finally:
         relay.disconnect()
-        print(f"{stamp()}  Klaar, poort gesloten")
+        print(f"{stamp()}  Done, port closed")
 
 
 if __name__ == "__main__":

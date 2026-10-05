@@ -7,7 +7,21 @@ per run (ports, amounts, number of dispenses) belongs in the window instead,
 not here.
 """
 
+import sys
 from pathlib import Path
+
+# ----------------------------------------------------------------------
+# Where the application's own files are
+# ----------------------------------------------------------------------
+# True when running as a .exe built with PyInstaller. Such a build unpacks
+# everything it carries into a temporary directory and throws it away again on
+# exit, so the two kinds of file have to be told apart: the ones that come with
+# the application and the ones it writes.
+FROZEN = getattr(sys, "frozen", False)
+
+# Files loaded at runtime (the window's logo). In a build these sit in the
+# unpacked bundle, during development next to this package.
+RESOURCE_DIRECTORY = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 
 # ----------------------------------------------------------------------
 # The units of the machine
@@ -158,8 +172,12 @@ TEXT_COLOUR = "rgb(255, 255, 255)"
 # ----------------------------------------------------------------------
 # Logging
 # ----------------------------------------------------------------------
-# One file per test run, written next to the application.
-LOG_DIRECTORY = Path(__file__).resolve().parent.parent / "logs"
+# One file per test run, written next to the application: beside the .exe in a
+# build, beside main.py during development. Deliberately not RESOURCE_DIRECTORY:
+# that one points inside the bundle, which is deleted when the .exe closes, so
+# every log would be gone the moment it could be read.
+LOG_DIRECTORY = (Path(sys.executable).resolve().parent if FROZEN
+                 else Path(__file__).resolve().parent.parent) / "logs"
 
 # Milliseconds are worth having: a garbled reply and the command before it can
 # be only a few tens of milliseconds apart.

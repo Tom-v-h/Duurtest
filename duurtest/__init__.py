@@ -13,13 +13,23 @@ import each other by plain name ("import vimbus"), which does not resolve
 inside a package. Putting this directory on the import path makes that work
 without editing those two files, so a newer version of them can simply be
 dropped in place.
+
+In a .exe built with PyInstaller there are no .py files on disk to find, so
+the import path does not help there; the module is registered under its plain
+name instead, which comes to the same thing for "import vimbus".
 """
 
 import sys as _sys
 from pathlib import Path as _Path
 
-_HERE = str(_Path(__file__).resolve().parent)
-if _HERE not in _sys.path:
-    _sys.path.insert(0, _HERE)
+if getattr(_sys, "frozen", False):
+    # Imported as duurtest.vimbus, which is the name it is bundled under, and
+    # then also made known as plain "vimbus" so control_board finds it.
+    from . import vimbus as _vimbus
+    _sys.modules.setdefault("vimbus", _vimbus)
+else:
+    _HERE = str(_Path(__file__).resolve().parent)
+    if _HERE not in _sys.path:
+        _sys.path.insert(0, _HERE)
 
 __version__ = "1.0.0"

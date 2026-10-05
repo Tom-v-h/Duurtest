@@ -46,12 +46,12 @@ class RelayController:
                     timeout=self.config.timeout,
                     write_timeout=self.config.write_timeout,
                 )
-                log.info("Poort %s geopend op %s baud", self.config.port, self.config.baudrate)
+                log.info("Port %s opened at %s baud", self.config.port, self.config.baudrate)
                 # Some STM32 boards reset when serial opens.
                 time.sleep(self.config.startup_delay)
                 self.clear_buffers()
             except SerialException as exc:
-                log.error("Poort %s kon niet geopend worden: %s", self.config.port, exc)
+                log.error("Port %s could not be opened: %s", self.config.port, exc)
                 raise ConnectionError(f"Could not open serial port {self.config.port}: {exc}") from exc
      
     def disconnect(self) -> None:
@@ -59,7 +59,7 @@ class RelayController:
             if self._serial is not None:
                 self._serial.close()
                 self._serial = None
-                log.info("Poort %s gesloten", self.config.port)
+                log.info("Port %s closed", self.config.port)
 
     @property
     def is_connected(self) -> bool:
@@ -98,7 +98,7 @@ class RelayController:
         response = self._read_response()
         # One line per reply, so a multi-line answer stays on one log line.
         log.info("RX  %s   (%.0f ms)",
-                 response.replace("\n", " | ") if response else "<geen antwoord>",
+                 response.replace("\n", " | ") if response else "<no answer>",
                  (time.time() - started) * 1000)
         return response
     

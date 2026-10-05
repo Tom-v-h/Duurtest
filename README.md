@@ -16,10 +16,48 @@ pip install -r requirements.txt
 python main.py
 ```
 
+De teksten in het venster en in het log zijn Engels; dit bestand is Nederlands.
+
+## Een .exe maken
+
+Voor een test-PC zonder Python staat de bouwbeschrijving in `duurtest.spec`.
+Bouwen moet op Windows gebeuren: PyInstaller maakt een .exe van de Python die
+hem draait, dus een build op Linux levert geen Windows-programma op.
+
+```
+pip install -r requirements.txt
+pip install pyinstaller
+pyinstaller duurtest.spec
+```
+
+Het resultaat is `dist/Duurtest.exe`. Daar zit alles in: Python, Qt, pyserial
+en de encryptie, dus op de test-PC hoeft niets geïnstalleerd te worden.
+
+In `duurtest.spec` staat bovenaan `ONEFILE`. Met `True` krijg je één bestand
+dat je zo kunt kopiëren, maar dat pakt zichzelf bij elke start uit en doet er
+daardoor een paar seconden over voordat het venster komt. Met `False` krijg je
+een map `dist/Duurtest/` met de exe en zijn libraries ernaast, die meteen
+opstart.
+
+De `logs/` map komt naast de exe te staan, niet erin: wat in de bundel staat
+wordt bij het afsluiten weggegooid. Zet de exe dus ergens waar hij mag
+schrijven, dus niet in `C:\Program Files`.
+
+Let op: de exe bevat een kopie van de code. Een waarde in `config.py` of een
+wijziging in Qt Designer verandert niets aan een bestaande exe, daarvoor moet
+je opnieuw bouwen. Dat is de reden om op de machine waar je nog aan het
+afregelen bent gewoon `python main.py` te blijven gebruiken.
+
+Start de exe een keer vanaf de command line als hij het niet doet. Zet dan in
+`duurtest.spec` `console=False` op `True` en bouw opnieuw: de foutmelding
+blijft dan staan in plaats van met het venster te verdwijnen.
+
 ## Structuur
 
 ```
 main.py                  startpunt van de applicatie
+duurtest.spec            bouwbeschrijving voor de .exe (PyInstaller)
+power_test.py            schakelt alleen het relais, zonder te dispensen
 logs/                    logbestanden, één per testrun
 duurtest/
 ├── gui.py               leest het venster uit en toont de status
@@ -65,7 +103,7 @@ de milliseconde:
 2026-08-06 14:30:15.140  duurtest.relay       INFO    RX  Relay is ON   (12 ms)
 2026-08-06 14:30:25.191  duurtest.machine     INFO    TX  dispense_nl('CX01', 10000000)
 2026-08-06 14:30:25.204  duurtest.machine     INFO    RX  dispense_nl -> {'result_code': ResultCode.OK}   (13 ms)
-2026-08-06 14:30:25.205  duurtest.machine     ERROR   RX  dispense_all mislukt na 41 ms: Expected encrypted string ...
+2026-08-06 14:30:25.205  duurtest.machine     ERROR   RX  dispense_all failed after 41 ms: Expected encrypted string ...
 ```
 
 `TX` is wat de PC verstuurt, `RX` wat er terugkomt, met daarachter hoe lang het
@@ -87,7 +125,7 @@ Wil je ook de ruwe bytes van de seriële poort zien, start dan met
 | Com-port relay | seriële poort van de relay/STM32 |
 | Baudrate relay | baudrate van diezelfde poort, standaard 115200 |
 | Com-port machine | seriële poort van de control board van de machine |
-| Machine aan / uit | schakelt de voeding via de relay, zonder een test te starten |
+| Machine on / off | schakelt de voeding via de relay, zonder een test te starten |
 | Number of dispenses | totaal aantal dispenses in de test |
 | Power cycle interval | na elke N dispenses gaat de spanning eraf en weer aan, 0 = uit |
 | Dispense amount | vaste hoeveelheid ml, of een willekeurige waarde tussen min en max; minimaal 0,8 ml, in stappen van 0,1 |
@@ -129,8 +167,8 @@ vulniveau van elke unit wordt na afloop opnieuw gelezen en de daling vergeleken
 met wat er gevraagd was. Dat komt zo in het log:
 
 ```
-CX01: gevraagd 2.40 ml, gedispenst 2.38 ml (verschil -0.02 ml)
-MH01: gevraagd 0.90 ml, gedispenst 1.65 ml (verschil +0.75 ml, buiten de tolerantie van 0.20 ml)
+CX01: asked for 2.40 ml, dispensed 2.38 ml (difference -0.02 ml)
+MH01: asked for 0.90 ml, dispensed 1.65 ml (difference +0.75 ml, outside the tolerance of 0.20 ml)
 ```
 
 Een afwijking wordt gemeld en geteld, maar stopt de test nooit; het aantal staat
@@ -138,7 +176,7 @@ aan het eind in de melding. `DISPENSE_TOLERANCE_ML` bepaalt wanneer iets een
 afwijking heet en met `CHECK_DISPENSED_AMOUNT = False` laat je de controle
 helemaal weg.
 
-De knop **Machine aan** schakelt de voeding zonder een test te starten. Dat is
+De knop **Machine on** schakelt de voeding zonder een test te starten. Dat is
 nodig voor de oudere control boarden: die laten hun com-poort alleen zien als de
 machine spanning heeft, dus zonder die knop valt de poort niet te kiezen. Bij de
 nieuwe boarden blijft de poort altijd zichtbaar en is de knop alleen gemak.

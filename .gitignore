@@ -11,3 +11,7 @@ env/
 # Editors
 .vscode/
 .idea/
+
+# PyInstaller: bouwmap en resultaat
+build/
+dist/
